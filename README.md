@@ -1,55 +1,83 @@
-# dectris-hackathon
+# Holoscan pipeline
 
-April 2025 Hackathon between NVIDIA, DECTRIS, DLS, PSI.
+The ptychography reconstruction app files are located in `./ptycho`.
+Ptycho pipeline is under development.
 
-This repository contains trainings and materials to facilitate, build, and deploy a data processing pipeline for real-time reconstruction of X-ray ptychography data recorded using high-speed DECTRIS cameras, such as SELUN and EIGER.
-
-## Contents
-- Training
-    -  Holoscan Bootcamp Materials -- `./bootcamp/`
-        - Overview of Holoscan framework for real-time sensor data processing
-        - [Learn by example](bootcamp/workspace/python/Python-Holoscan-Tutorial.ipynb)
-    - CUDA Python Training -- `./cuda-python-training/`
-        - Overview of GPU programming in Python
-        - [Slides & Overview](cuda-python-training/slides)
-        - [Learn by example](cuda-python-training/notebooks)
+STXM analysis app files are located in `./stxm`.
 
 
-- Holoscan data processing pipeline -- `./holoscan_pipeline/`
-    - Real-time ptychography data processing pipeline
-    - [Overview](holoscan_pipeline/README.md)
-
-
-## Prerequisites
- 
- Materials in this repo are written to be deployed within a Docker container on a system that satisfies Holoscan SDK minimum installation requirements ([details](https://docs.nvidia.com/holoscan/sdk-user-guide/sdk_installation.html)):
-
-- Debian distribution such as Ubuntu 22.04 or RHEL 9.x.
-- Docker -- [link](https://docs.docker.com/engine/install/ubuntu/)
-- NVIDIA Container Toolkit (>1.16.2) -- [link](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-- Account on NGC -- [link](https://ngc.nvidia.com/signin)
-
-
-## Getting Started
-
-1. Build the containers:
-```bash
-./build_containers.sh
+To build Holoscan container:
+```
+docker build . -t ptycho-holoscan:stxm --network host
 ```
 
-2. Run the bootcamp environment:
-```bash
-./run_bootcamp.sh
+To run the container:
+```
+docker run -it --rm --ipc=host --privileged \
+    --runtime=nvidia \
+    --gpus all \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --network host \
+    -v ./ptycho:/workspace/ptycho \
+    -v ./stxm:/workspace/stxm \
+    ptycho-holoscan:stxm
+```
+The mounting of the folder is done to avoid rebuilding the container on every code change during the development.
+
+The entrypoint at the moment is simply bash. The app consists of several pieces (TODO: add other pieces):
+
+```
+cd ../stxm
+pipeline_speed.py - Rx speed test
+pipeline_stxm.py - STXM analysis
+pipeline_stxm_image_only.py - STXM analysis with image only; positions are ommitted. Also, currently this file has optimized data recieving with buffered message ingest and parallel decompression.
 ```
 
-3. Run the Holoscan environment:
-```bash
-./run_holoscan.sh
+Prior to running the app, look at the config file `stxm/holoscan_config.yaml` (or other config file, as needed) and make sure the network ports and data formats are correct.
+
+To run the app:
+```
+cd /workspace/stxm
+python pipeline_stxm_image_only.py # or other file as needed
 ```
 
-4. Install and activate venv:
+# Stream proxy
+This is a golang utility that allows to duplicate the data stream from the detector to Holoscan app and to another client.
+
+To launch this utility, run the following command:
 ```
-. ./prepare.sh
+cd /workspace/stxm/streamproxy
+./streamproxy --zmq-recv-addr=tcp://127.0.0.1:5555 --zmq-send-addr1=tcp://127.0.0.1:5566 --zmq-send-addr2=tcp://127.0.0.1:5565
 ```
 
-For detailed instructions on specific components, please refer to the README files in their respective directories.
+where the first address is the address of the detector, the second address is the address of the first client, and the third address is the address of the second client.
+
+There is also a test client that can be used to test the stream proxy. To launch the test client, run the following command:
+```
+cd /workspace/stxm/streamclient
+./streamclient --zmq-addr=tcp://127.0.0.1:5566 # or other address as needed
+```
+
+The corresponding folders also contain the code for the test client (one would need to install the golang compiler to build it).
+
+# Profiling the pipeline with nsight systems
+
+When profiling the pipeline, the Linux operating system’s perf_event_paranoid level must be 2 or less. Use the following command to check:
+```
+cat /proc/sys/kernel/perf_event_paranoid
+```
+If the output is >2, then do the following to temporarily adjust the paranoid level (note that this has to be done after each reboot):
+```
+sudo sh -c 'echo 2 >/proc/sys/kernel/perf_event_paranoid'
+```
+
+Profile the app:
+```
+nsys profile -t cuda,nvtx,osrt,python-gil -o report.nsys-rep -f true python3 pipeline_stxm_image_only.py # or other file as needed
+```
+Useful: add `-d 30` to profile for 30 seconds.
+
+# Simplon API Simulator
+
+this is ran from a separate repo using private binaries.
