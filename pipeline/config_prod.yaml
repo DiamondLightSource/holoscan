@@ -1,0 +1,26 @@
+%YAML 1.2
+
+image_src:
+  zmq_endpoint: "tcp://172.23.82.48:31001"
+  receive_timeout_ms: 100
+  batch_size: 1000
+
+decompress_op:
+  data_size: [190, 190]
+  data_dtype: uint16
+
+position_src:
+  zmq_endpoint: "tcp://bl13j-ea-serv-02:6666"
+  receive_timeout_ms: 1000
+
+masking_op:
+  center_x: 95
+  center_y: 95
+  radius: 25
+
+sink_and_publish_op:
+  publish_tensors: ["positions", "positions_ids", "inner", "outer", "intensity_ids"]
+  # publish_folder: null
+  publish_folder: "./processed"
+  temp_folder: "./temp"
+  

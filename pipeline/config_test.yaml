@@ -1,0 +1,28 @@
+%YAML 1.2
+
+image_src:
+  # zmq_endpoint: "tcp://20.10.37.101:31001"  # Production endpoint
+  zmq_endpoint: "tcp://localhost:5555"        # Local simulator
+  receive_timeout_ms: 1000  # Increased timeout for testing
+  batch_size: 200         # Larger batch for testing
+
+decompress_op:
+  data_size: [192, 192]  # Match selun test data (192x192 images)
+  data_dtype: uint16
+
+position_src:
+  zmq_endpoint: "tcp://localhost:5556"
+  receive_timeout_ms: 1000  # Increased timeout for testing
+
+masking_op:
+  center_x: 96  # Adjusted for 192x192 images (center)
+  center_y: 96  # Adjusted for 192x192 images (center)
+  radius: 40    # Adjusted proportionally
+
+sink_and_publish_op:
+  publish_tensors: ["positions", "positions_ids", "inner", "outer", "intensity_ids"]
+  publish_folder: null
+  # publish_folder: "./processed"
+  temp_folder: "./temp"
+  
+  

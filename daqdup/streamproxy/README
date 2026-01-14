@@ -1,0 +1,4 @@
+To statically link compile with:
+
+CGO_ENABLED=0 go build .
+
