@@ -15,3 +15,5 @@ Andreas Hehn ahehn@nvidia.com
 Filip Leonarski filip.leonarski@psi.ch
 
 [DLS]
+Oriol Roche oriol.roche@diamond.ac.uk
+Darren Batey darren.batey@diamond.ac.uk
