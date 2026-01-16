@@ -11,10 +11,13 @@ To run the container:
 ```
 ./run_container.sh
 ```
+inside the container, start nats server (fix this later):
+```
+nats-server -p 6000 &
+```
 
 To run the app:
 ```
-cd ./workspace/
 python pipeline.py --config holoscan_config.yaml
 ```
 
