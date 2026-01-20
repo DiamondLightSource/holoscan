@@ -11,9 +11,9 @@ To run the container:
 ```
 ./run_container.sh
 ```
-inside the container, start nats server (fix this later):
+inside the container, start nats server with JetStream enabled (fix this later):
 ```
-nats-server -p 6000 &
+nats-server -p 6000 -js &
 ```
 
 To run the app:
