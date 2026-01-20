@@ -5,8 +5,7 @@ from queue import Empty
 # import asyncio
 import sys
 from pathlib import Path
-# Add parent directory to path to import nats_async
-sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import threading
 # import time
 from queue import Empty, Queue
@@ -32,6 +31,8 @@ class NatsSubscribeBackend(SubscribeBackend):
     """NATS subscription backend."""
     
     def __init__(self, host: str, subjects: tuple):
+        # Add parent directory to path to import nats_async
+        sys.path.insert(0, str(Path(__file__).parent.parent))
         from nats_async import launch_nats_instance
         self.nats_inst = launch_nats_instance(host=host, subscribe_subjects=subjects)
     
