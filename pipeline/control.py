@@ -19,6 +19,7 @@ class ControlOp(Operator):
     def __init__(self, fragment, *args,
                  stats: dict = None,
                  flushable_ops: list[Operator] = None,
+                 publish_backend = None,
                  **kwargs):
         """
         Initialize control operator.
@@ -27,10 +28,12 @@ class ControlOp(Operator):
             fragment: Holoscan fragment
             stats: Shared statistics dictionary
             flushable_ops: List of operators that can be flushed
+            publish_backend: Backend instance for publishing flush messages
         """
         super().__init__(fragment, *args, **kwargs)
         self.logger = logging.getLogger(kwargs.get("name", "ControlOp"))
         self.flushable_ops = flushable_ops
+        self.publish_backend = publish_backend
         
     def setup(self, spec: OperatorSpec):
         spec.input("input").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128)
@@ -38,21 +41,17 @@ class ControlOp(Operator):
 
     def compute(self, op_input, op_output, context):
         """Handle control messages."""
-        # Import nats instance
-        from nats_async import launch_nats_instance
-        global nats_inst
-        try:
-            nats_inst
-        except NameError:
-            nats_inst = launch_nats_instance("localhost:6000")
-        
         msg = op_input.receive("input")
         
         if msg == "flush":
             # Flush all flushable operators
             for op in self.flushable_ops:
                 op.flush()
-            nats_inst.publish("stxm_flush", "flush")
+            
+            # Publish flush message through the backend if available
+            if self.publish_backend is not None:
+                import numpy as np
+                self.publish_backend.publish("stxm_flush", np.array([1]))  # Simple signal
         
         elif msg == "processing_end":
             # Forward processing_end signal

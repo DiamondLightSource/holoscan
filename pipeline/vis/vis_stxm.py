@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 # Add parent directory to path to import nats_async
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from nats_async import launch_nats_instance
 import threading
 # import time
 from queue import Empty, Queue
@@ -17,18 +16,99 @@ import time
 import matplotlib.tri as tri    
 import matplotlib
 from argparse import ArgumentParser
+import zmq
 # Create nats instance with default host (will use environment variable)
 
 
-def get_nats_instance(host="localhost:6000"):
-    nats_inst = launch_nats_instance(host=host,
-                                 subscribe_subjects=("stxm_inner",
-                                                     "stxm_outer",
-                                                     "stxm_positions",
-                                                     "stxm_position_ids",
-                                                     "stxm_intensity_ids",
-                                                     "stxm_flush"))
-    return nats_inst
+class SubscribeBackend:
+    """Base class for subscription backends."""
+    
+    def get_queue(self, subject: str) -> Queue:
+        """Get the queue for a specific subject/topic."""
+        raise NotImplementedError
+
+
+class NatsSubscribeBackend(SubscribeBackend):
+    """NATS subscription backend."""
+    
+    def __init__(self, host: str, subjects: tuple):
+        from nats_async import launch_nats_instance
+        self.nats_inst = launch_nats_instance(host=host, subscribe_subjects=subjects)
+    
+    def get_queue(self, subject: str) -> Queue:
+        """Get the queue for a specific NATS subject."""
+        return self.nats_inst.get_rxq(subject)
+
+
+class ZmqSubscribeBackend(SubscribeBackend):
+    """ZMQ SUB backend."""
+    
+    def __init__(self, endpoint: str, subjects: tuple):
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.SUB)
+        self.socket.connect(endpoint)
+        
+        # Subscribe to all specified topics
+        self.subjects = subjects
+        for subject in subjects:
+            self.socket.subscribe(subject.encode('utf-8'))
+        
+        # Create queues for each subject
+        self.queues = {subject: Queue() for subject in subjects}
+        
+        # Start background thread to receive messages
+        self.running = True
+        self.thread = threading.Thread(target=self._receive_loop, daemon=True)
+        self.thread.start()
+        
+        print(f"ZMQ subscriber connected to {endpoint}")
+    
+    def _receive_loop(self):
+        """Background thread to receive ZMQ messages and put them in queues."""
+        while self.running:
+            try:
+                # Non-blocking receive with timeout
+                if self.socket.poll(100):  # 100ms timeout
+                    topic, data = self.socket.recv_multipart()
+                    topic_str = topic.decode('utf-8')
+                    if topic_str in self.queues:
+                        self.queues[topic_str].put(data, block=False)
+            except Exception as e:
+                print(f"Error in ZMQ receive loop: {e}")
+                time.sleep(0.1)
+    
+    def get_queue(self, subject: str) -> Queue:
+        """Get the queue for a specific ZMQ topic."""
+        return self.queues[subject]
+    
+    def close(self):
+        """Close ZMQ socket."""
+        self.running = False
+        self.thread.join(timeout=1.0)
+        self.socket.close()
+        self.context.term()
+
+
+def get_subscribe_backend(backend: str = "nats", endpoint: str = "localhost:6000"):
+    """
+    Get a subscription backend instance.
+    
+    Args:
+        backend: Backend type ('nats' or 'zmq')
+        endpoint: Connection endpoint (host:port for NATS, tcp://host:port for ZMQ)
+    
+    Returns:
+        SubscribeBackend instance
+    """
+    subjects = ("stxm_inner", "stxm_outer", "stxm_positions", 
+                "stxm_position_ids", "stxm_intensity_ids", "stxm_flush")
+    
+    if backend == "nats":
+        return NatsSubscribeBackend(endpoint, subjects)
+    elif backend == "zmq":
+        return ZmqSubscribeBackend(endpoint, subjects)
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
 
 data_dict = {
     "outer": None,
@@ -41,10 +121,10 @@ data_dict = {
 
 
 def receive_data():
-    global nats_inst, data_dict
+    global backend, data_dict
     while True:
         try:
-            outer = nats_inst.get_rxq("stxm_outer").get(block=False)
+            outer = backend.get_queue("stxm_outer").get(block=False)
             outer = np.array(json.loads(outer.decode()))
             if data_dict["outer"] is None:
                 data_dict["outer"] = outer.copy()
@@ -53,7 +133,7 @@ def receive_data():
         except Empty:
             pass
         try:
-            inner = nats_inst.get_rxq("stxm_inner").get(block=False)
+            inner = backend.get_queue("stxm_inner").get(block=False)
             inner = np.array(json.loads(inner.decode()))
             if data_dict["inner"] is None:
                 data_dict["inner"] = inner.copy()
@@ -62,7 +142,7 @@ def receive_data():
         except Empty:
             pass
         try:
-            positions = nats_inst.get_rxq("stxm_positions").get(block=False)
+            positions = backend.get_queue("stxm_positions").get(block=False)
             positions = np.array(json.loads(positions.decode()))
             if data_dict["positions"] is None:
                 data_dict["positions"] = positions.copy()
@@ -71,7 +151,7 @@ def receive_data():
         except Empty:
             pass
         try:
-            position_ids = nats_inst.get_rxq("stxm_position_ids").get(block=False)
+            position_ids = backend.get_queue("stxm_position_ids").get(block=False)
             position_ids = np.array(json.loads(position_ids.decode()))
             if data_dict["position_ids"] is None:
                 data_dict["position_ids"] = position_ids.copy()
@@ -80,7 +160,7 @@ def receive_data():
         except Empty:
             pass
         try:
-            intensity_ids = nats_inst.get_rxq("stxm_intensity_ids").get(block=False)    
+            intensity_ids = backend.get_queue("stxm_intensity_ids").get(block=False)    
             intensity_ids = np.array(json.loads(intensity_ids.decode()))
             if data_dict["intensity_ids"] is None:
                 data_dict["intensity_ids"] = intensity_ids.copy()
@@ -90,7 +170,7 @@ def receive_data():
             pass
         
         try:
-            flush = nats_inst.get_rxq("stxm_flush").get(block=False)
+            flush = backend.get_queue("stxm_flush").get(block=False)
             print(f"Got flush: {flush}")
             data_dict["outer"] = None
             data_dict["inner"] = None
@@ -251,7 +331,11 @@ def animate(i):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--host", type=str, default="localhost:6000", help="Config file")
+    parser.add_argument("--backend", type=str, default="zmq", 
+                       choices=["nats", "zmq"],
+                       help="Backend to use for receiving data")
+    parser.add_argument("--endpoint", type=str, default=None,
+                       help="Backend endpoint (default: 'localhost:6000' for NATS, 'tcp://localhost:9999' for ZMQ)")
     parser.add_argument("--plot_batch", type=int, default=None, help="Plot batch size")
     parser.add_argument("--show_diagnostics", type=bool, default=False, help="Show diagnostics")
     parser.add_argument("--xmin", type=float, default=None, help="xmin")
@@ -262,8 +346,18 @@ if __name__ == "__main__":
 
     show_diagnostics = args.show_diagnostics
     plot_batch = args.plot_batch
-
-    nats_inst = get_nats_instance(host=args.host)
+    
+    # Determine endpoint based on backend if not specified
+    if args.endpoint is None:
+        if args.backend == "nats":
+            endpoint = "localhost:6000"
+        else:  # zmq
+            endpoint = "tcp://localhost:6010"
+    else:
+        endpoint = args.endpoint
+    
+    print(f"Using {args.backend} backend at {endpoint}")
+    backend = get_subscribe_backend(backend=args.backend, endpoint=endpoint)
 
     t = threading.Thread(target=receive_data)
     t.start()

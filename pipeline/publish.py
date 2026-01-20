@@ -2,7 +2,7 @@
 Publishing Module for Holoscan STXM Pipeline
 
 This module contains operators for:
-- Publishing data to NATS
+- Publishing data to NATS or ZMQ
 - Writing data to files
 - Publishing completed datasets to cloud storage
 """
@@ -13,15 +13,64 @@ import logging
 import time
 import os
 import h5py
+import json
+import zmq
 
 from holoscan.core import Operator, OperatorSpec, IOSpec, ConditionType
 
 
+class PublishBackend:
+    """Base class for publishing backends."""
+    
+    def publish(self, subject: str, data: np.ndarray):
+        """Publish data to a subject/topic."""
+        raise NotImplementedError
+
+
+class NatsBackend(PublishBackend):
+    """NATS publishing backend."""
+    
+    def __init__(self, host: str = "localhost:6000"):
+        from nats_async import launch_nats_instance
+        self.nats_inst = launch_nats_instance(host)
+        self.logger = logging.getLogger("NatsBackend")
+    
+    def publish(self, subject: str, data: np.ndarray):
+        """Publish data to NATS subject."""
+        self.nats_inst.publish(subject, data)
+
+
+class ZmqBackend(PublishBackend):
+    """ZMQ PUB/SUB publishing backend."""
+    
+    def __init__(self, endpoint: str = "tcp://*:9999"):
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.PUB)
+        self.socket.bind(endpoint)
+        self.logger = logging.getLogger("ZmqBackend")
+        self.logger.info(f"ZMQ publisher bound to {endpoint}")
+        # Give time for subscribers to connect
+        time.sleep(0.1)
+    
+    def publish(self, subject: str, data: np.ndarray):
+        """Publish data to ZMQ topic."""
+        # ZMQ multipart message: [topic, json_data]
+        topic = subject.encode('utf-8')
+        # Convert numpy array to JSON
+        data_json = json.dumps(data.tolist()).encode('utf-8')
+        self.socket.send_multipart([topic, data_json])
+    
+    def close(self):
+        """Close ZMQ socket."""
+        self.socket.close()
+        self.context.term()
+
+
 class SinkAndPublishOp(Operator):
     """
-    Operator for sinking processed data and publishing to NATS.
+    Operator for sinking processed data and publishing to NATS or ZMQ.
     
-    Receives processed STXM data, publishes individual tensors to NATS subjects,
+    Receives processed STXM data, publishes individual tensors to subjects/topics,
     and optionally saves data to temporary HDF5 files for cloud publishing.
     """
     
@@ -31,6 +80,9 @@ class SinkAndPublishOp(Operator):
                  publish_folder=None,
                  publish_tensors: list[str] = None,
                  temp_folder: str = None,
+                 publish_backend: PublishBackend = None,
+                 backend: str = "nats",
+                 backend_endpoint: str = None,
                  **kwargs):
         """
         Initialize sink and publish operator.
@@ -38,10 +90,13 @@ class SinkAndPublishOp(Operator):
         Args:
             fragment: Holoscan fragment
             stats: Shared statistics dictionary
-            tensor2subject: Mapping of tensor names to NATS subjects
+            tensor2subject: Mapping of tensor names to subjects/topics
             publish_folder: Folder for final published data
             publish_tensors: List of tensors to include in published files
             temp_folder: Temporary folder for accumulating batches
+            publish_backend: Pre-created backend instance (preferred)
+            backend: Publishing backend type ('nats' or 'zmq') - used if publish_backend is None
+            backend_endpoint: Endpoint for backend - used if publish_backend is None
         """
         self.logger = logging.getLogger(kwargs.get("name", "SinkAndPublishOp"))
         self.stats = stats
@@ -51,6 +106,9 @@ class SinkAndPublishOp(Operator):
         self.publish_tensors = publish_tensors if publish_tensors is not None else []
         self.tensor2subject = tensor2subject
         self.temp_folder = temp_folder
+        self.backend = publish_backend  # Use pre-created backend if provided
+        self.backend_type = backend
+        self.backend_endpoint = backend_endpoint
         super().__init__(fragment, *args, **kwargs)
 
     def setup(self, spec: OperatorSpec):
@@ -86,13 +144,19 @@ class SinkAndPublishOp(Operator):
 
     def compute(self, op_input, op_output, context):
         """Receive, publish, and save processed data."""
-        # Import nats instance here to avoid circular imports
-        from nats_async import launch_nats_instance
-        global nats_inst
-        try:
-            nats_inst
-        except NameError:
-            nats_inst = launch_nats_instance("localhost:6000")
+        # Initialize backend on first call
+        if self.backend is None:
+            if self.backend_type == "nats":
+                endpoint = self.backend_endpoint or "localhost:6000"
+                self.backend = NatsBackend(endpoint)
+                self.logger.info(f"Initialized NATS backend at {endpoint}")
+            elif self.backend_type == "zmq":
+                endpoint = self.backend_endpoint or "tcp://*:9999"
+                self.backend = ZmqBackend(endpoint)
+                self.logger.info(f"Initialized ZMQ backend at {endpoint}")
+            else:
+                self.logger.error(f"Unknown backend type: {self.backend_type}")
+                return
         
         if self.tensor2subject is None:
             return
@@ -102,21 +166,21 @@ class SinkAndPublishOp(Operator):
         if data is None:
             time.sleep(0.1)
             return
-        self.logger.info(f"Received data with keys {data.keys()}")
+        # self.logger.info(f"Received data with keys {data.keys()}")
         # Handle simple array case
         if isinstance(data, np.ndarray) and len(self.tensor2subject) == 1:
             subject = list(self.tensor2subject.values())[0]
-            nats_inst.publish(subject, data)
+            self.backend.publish(subject, data)
             return
         
         # Collect arrays for file publishing
         if self.publish_folder is not None:
             arrays_to_publish = []
         
-        # Publish each tensor to its NATS subject
+        # Publish each tensor to its subject/topic
         for tensor_key, subject in self.tensor2subject.items():
             tensor = cp.asnumpy(data[tensor_key])
-            nats_inst.publish(subject, tensor)
+            self.backend.publish(subject, tensor)
 
             # self.logger.info(f"Published {tensor_key} to {subject} with shape {tensor.shape}")
             if self.publish_folder is not None:

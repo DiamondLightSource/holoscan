@@ -103,6 +103,21 @@ class StxmApp(Application):
         masking_kwargs['data_size'] = decompress_kwargs['data_size']
         masking_op = MaskingOp(self, name="masking_op", **masking_kwargs)
         
+        # ===== Create Publishing Backend =====
+        from publish import NatsBackend, ZmqBackend
+        sink_config = self.kwargs('sink_and_publish_op')
+        backend_type = sink_config.get('backend', 'nats')
+        backend_endpoint = sink_config.get('backend_endpoint', None)
+        
+        if backend_type == "nats":
+            endpoint = backend_endpoint or "localhost:6000"
+            publish_backend = NatsBackend(endpoint)
+        elif backend_type == "zmq":
+            endpoint = backend_endpoint or "tcp://*:9999"
+            publish_backend = ZmqBackend(endpoint)
+        else:
+            raise ValueError(f"Unknown backend type: {backend_type}")
+        
         # ===== Sink and Publish Operator =====
         tensor2subject = {
             "positions": "stxm_positions",
@@ -114,6 +129,7 @@ class StxmApp(Application):
         sink_and_publish_op = SinkAndPublishOp(self,
                                                stats=self.stats,
                                                tensor2subject=tensor2subject,
+                                               publish_backend=publish_backend,
                                                **self.kwargs('sink_and_publish_op'),
                                                name="sink_and_publish_op")
 
@@ -133,6 +149,7 @@ class StxmApp(Application):
         control_op = ControlOp(self,
                                stats=self.stats,
                                flushable_ops=flushable_ops,
+                               publish_backend=publish_backend,
                                name="control_op")
 
         # ===== Connect Operators =====

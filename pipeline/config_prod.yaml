@@ -27,4 +27,8 @@ sink_and_publish_op:
   # publish_folder: null
   publish_folder: "./processed"
   temp_folder: "./temp"
+  backend: "zmq"  # Options: "nats" or "zmq"
+  backend_endpoint: "tcp://localhost:6010"  # ZMQ endpoint or NATS host:port
+  # backend: "nats"  # Options: "nats" or "zmq"
+  # backend_endpoint: "localhost:6000"  # ZMQ endpoint or NATS host:port
   
