@@ -6,5 +6,5 @@ docker run -it --rm --ipc=host --privileged \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     --network host \
-    -v ./pipeline:/workspace \
+    -v "$(pwd)/pipeline:/workspace" \
     ptycho-holoscan:stxm
