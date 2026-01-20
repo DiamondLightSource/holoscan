@@ -6,15 +6,11 @@ To build Holoscan container:
 ```
 ./build_container.sh
 ```
-
 To run the container:
 ```
 ./run_container.sh
 ```
-inside the container, start nats server with JetStream enabled (fix this later):
-```
-nats-server -p 6000 -js &
-```
+The NATS server with JetStream will start automatically on port 6000.
 
 To run the app:
 ```

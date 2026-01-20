@@ -68,10 +68,10 @@ RUN cd /tmp && \
 WORKDIR /workspace
 
 # Copy startup script that handles NATS initialization
-# COPY pipeline/start_container.sh /usr/local/bin/start_container.sh
-# RUN chmod +x /usr/local/bin/start_container.sh
+COPY start_nats_server.sh /usr/local/bin/start_nats_server.sh
+RUN chmod +x /usr/local/bin/start_nats_server.sh
 
 # Set entrypoint to startup script
-# This will automatically check and start NATS if needed
-# ENTRYPOINT ["/usr/local/bin/start_container.sh"]
+# This will automatically start NATS server with JetStream enabled
+ENTRYPOINT ["/usr/local/bin/start_nats_server.sh"]
 CMD ["/bin/bash"]
