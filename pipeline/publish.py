@@ -118,7 +118,7 @@ class SinkAndPublishOp(Operator):
             tensor = cp.asnumpy(data[tensor_key])
             nats_inst.publish(subject, tensor)
 
-            self.logger.info(f"Published {tensor_key} to {subject} with shape {tensor.shape}")
+            # self.logger.info(f"Published {tensor_key} to {subject} with shape {tensor.shape}")
             if self.publish_folder is not None:
                 if tensor_key in self.publish_tensors:
                     if tensor.ndim == 1:
