@@ -10,7 +10,7 @@ image_src:
   batch_size: 1000
 
 decompress_op:
-  data_size: [190, 190]
+  data_size: [514, 1030]
   data_dtype: uint16
 
 position_src:
@@ -18,9 +18,9 @@ position_src:
   receive_timeout_ms: 1000
 
 masking_op:
-  center_x: 95
-  center_y: 95
-  radius: 25
+  center_x: 257
+  center_y: 515
+  radius: 128
 
 sink_and_publish_op:
   publish_tensors: ["positions", "positions_ids", "inner", "outer", "intensity_ids"]
