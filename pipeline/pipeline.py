@@ -50,14 +50,13 @@ class StxmApp(Application):
     5. Publishes results to NATS and files
     """
     
-    def __init__(self, *args, num_decompress_ops=4, **kwargs):
+    def __init__(self, *args, **kwargs):
         """
         Initialize STXM application.
         
-        Args:
-            num_decompress_ops: Number of parallel decompression operators
+        Note: num_decompress_ops is set from config before run() is called
         """
-        self.num_decompress_ops = num_decompress_ops
+        self.num_decompress_ops = 4  # Default, will be overridden from config
         self.stats = {}
         super().__init__(*args, **kwargs)
 
@@ -160,10 +159,6 @@ def main():
     parser = ArgumentParser(description="STXM Data Processing Pipeline")
     parser.add_argument("--config", type=str, default="config_test.yaml",
                        help="Configuration file path (use config_prod.yaml for production)")
-    parser.add_argument("--num-decompress-ops", type=int, default=4,
-                       help="Number of parallel decompression operators")
-    parser.add_argument("--threads", type=int, default=6,
-                       help="Number of worker threads")
     args = parser.parse_args()
 
     # Initialize NATS instance (if available)
@@ -173,12 +168,26 @@ def main():
     else:
         print("Running without NATS publishing")
 
-    # Create and configure application
-    app = StxmApp(num_decompress_ops=args.num_decompress_ops)
+    # Create application
+    app = StxmApp()
     
+    # Load config to make kwargs available
+    app.config(args.config)
+    
+    # Get scheduler parameters from config via kwargs
+    scheduler_config = app.kwargs('scheduler')
+    num_decompress_ops = scheduler_config.get('num_decompress_ops', 4)
+    worker_threads = scheduler_config.get('worker_threads', 6)
+    
+    # Set num_decompress_ops - will be used in compose() when run() is called
+    app.num_decompress_ops = num_decompress_ops
+    
+    print(f"Pipeline configuration: {num_decompress_ops} decompression operators, {worker_threads} worker threads")
+    
+    # Set up scheduler with config values
     scheduler = MultiThreadScheduler(
             app,
-            worker_thread_number=args.threads,
+            worker_thread_number=worker_threads,
             check_recession_period_ms=0.001,
             stop_on_deadlock=True,
             stop_on_deadlock_timeout=500,
@@ -186,7 +195,6 @@ def main():
         )
     
     app.scheduler(scheduler)
-    app.config(args.config)
     app.run()
 
 

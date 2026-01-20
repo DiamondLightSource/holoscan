@@ -1,5 +1,9 @@
 %YAML 1.2
 
+scheduler:
+  num_decompress_ops: 3
+  worker_threads: 4
+
 image_src:
   zmq_endpoint: "tcp://172.23.82.48:31001"
   receive_timeout_ms: 100
