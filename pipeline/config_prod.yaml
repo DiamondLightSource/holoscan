@@ -25,8 +25,8 @@ masking_op:
 
 sink_and_publish_op:
   publish_tensors: ["positions", "positions_ids", "inner", "outer", "intensity_ids"]
-  # publish_folder: null
-  publish_folder: "./processed"
+  publish_folder: null
+  # publish_folder: "./processed"
   temp_folder: "./temp"
   backend: "zmq"  # Options: "nats" or "zmq"
   backend_endpoint: "tcp://localhost:6010"  # ZMQ endpoint or NATS host:port
