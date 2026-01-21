@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     hostname \
     socat \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
 # Add deadsnakes PPA and universe repository
