@@ -15,14 +15,16 @@ RUN apt-get update && apt-get install -y \
     vim \
     && rm -rf /var/lib/apt/lists/*
 
-# Add deadsnakes PPA and universe repository
-RUN add-apt-repository -y ppa:deadsnakes/ppa && \
-    add-apt-repository -y universe
+# Add universe repository and deadsnakes PPA manually (without add-apt-repository to avoid timeout)
+RUN echo "deb http://archive.ubuntu.com/ubuntu noble universe" >> /etc/apt/sources.list && \
+    echo "deb http://ppa.launchpad.net/deadsnakes/ppa/ubuntu noble main" > /etc/apt/sources.list.d/deadsnakes-ppa.list && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys F23C5A6CF475977595C89F51BA6932366A755776
 
 # Update package list and install Python 3.11 and other dependencies
 RUN apt-get update && apt-get install -y \
     python3.11 \
     python3.11-dev \
+    python3.11-venv \
     gcc \
     libhdf5-serial-dev \
     curl \
