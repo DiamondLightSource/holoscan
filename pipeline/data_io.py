@@ -193,6 +193,7 @@ class ZmqRxPositionOp(Operator):
         """Receive and emit position data."""
         try:
             msg = self.socket.recv_json()
+            print(f"Received message: {msg}")
             
             # Extract frame_number from message (number of emitted batches)
             frame_number = msg.get("frame_number", 0)
