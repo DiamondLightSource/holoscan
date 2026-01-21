@@ -14,7 +14,8 @@ decompress_op:
   data_dtype: uint16
 
 position_src:
-  zmq_endpoint: "tcp://bl13j-ea-serv-02:6666"
+  #zmq_endpoint: "tcp://bl13j-ea-serv-02:6666"
+  zmq_endpoint: "tcp://172.23.82.204:6666"
   receive_timeout_ms: 1000
 
 masking_op:
