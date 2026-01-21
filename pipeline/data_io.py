@@ -193,36 +193,59 @@ class ZmqRxPositionOp(Operator):
         """Receive and emit position data."""
         try:
             msg = self.socket.recv_json()
-            print(f"Received message: {msg}")
             
-            # Extract frame_number from message (number of emitted batches)
-            frame_number = msg.get("frame_number", 0)
+            # Check message type
+            msg_type = msg.get("msg_type", "data")  # Default to "data" for backward compatibility
             
-            # Detect wrap-around BEFORE calculating position_ids
-            # When frame_number goes from N (N>0) to 0, positions have wrapped around
-            if self.last_frame_number is not None and frame_number == 0 and self.last_frame_number > 0:
-                self.logger.info(f"Detected position array wrap-around (frame_number: {self.last_frame_number} -> 0), resetting cumulative count to 0")
+            if msg_type == "start":
+                # Handle start message - reset state for new acquisition
+                arm_time = msg.get("arm_time")
+                start_time = msg.get("start_time")
+                self.logger.info(f"Received START message: arm_time={arm_time}, start_time={start_time}")
+                
+                # Reset state for new acquisition
                 self.cumulative_position_count = 0
+                self.last_frame_number = None
+                self.logger.info("Reset position tracking for new acquisition")
+                return
             
-            datasets = msg["datasets"]
-            x = np.array(datasets["/FMC_IN.VAL1.Mean"]["data"])
-            y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
-            z = np.array(datasets["/FMC_IN.VAL3.Mean"]["data"])
-            th = np.array(datasets["/INENC4.VAL.Mean"]["data"])
-            positions = np.stack([x, y, z, th], axis=1)
-            batch_size = positions.shape[0]
+            elif msg_type == "data":
+                # Handle data message
+                
+                
+                # Extract frame_number from message (number of emitted batches)
+                frame_number = msg.get("frame_number", 0)
+                
+                # Detect wrap-around BEFORE calculating position_ids
+                # When frame_number goes from N (N>0) to 0, positions have wrapped around
+                if self.last_frame_number is not None and frame_number == 0 and self.last_frame_number > 0:
+                    self.logger.info(f"Detected position array wrap-around (frame_number: {self.last_frame_number} -> 0), resetting cumulative count to 0")
+                    self.cumulative_position_count = 0
+                
+                datasets = msg["datasets"]
+                x = np.array(datasets["/FMC_IN.VAL1.Mean"]["data"])
+                y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
+                z = np.array(datasets["/FMC_IN.VAL3.Mean"]["data"])
+                th = np.array(datasets["/INENC4.VAL.Mean"]["data"])
+                positions = np.stack([x, y, z, th], axis=1)
+                batch_size = positions.shape[0]
+                
+                # Calculate position_ids using cumulative position count (after potential wrap reset)
+                # position_ids = cumulative_count + np.arange(batch_size)
+                position_ids = self.cumulative_position_count + np.arange(batch_size)
+                
+                self.logger.info(f"Received position batch: frame_number={frame_number}, batch_size={batch_size}, position_ids={position_ids[0]}-{position_ids[-1]}")
+                
+                # Update tracking variables
+                self.cumulative_position_count += batch_size
+                self.last_frame_number = frame_number
+                
+                op_output.emit((positions, position_ids), "positions")
             
-            # Calculate position_ids using cumulative position count (after potential wrap reset)
-            # position_ids = cumulative_count + np.arange(batch_size)
-            position_ids = self.cumulative_position_count + np.arange(batch_size)
-            
-            self.logger.info(f"Received position batch: frame_number={frame_number}, batch_size={batch_size}, position_ids={position_ids[0]}-{position_ids[-1]}")
-            
-            # Update tracking variables
-            self.cumulative_position_count += batch_size
-            self.last_frame_number = frame_number
-            
-            op_output.emit((positions, position_ids), "positions")
+            else:
+                # Unknown message type
+                self.logger.warning(f"Received unknown message type: {msg_type}")
+                
         except zmq.error.Again:
             self.logger.debug("No message received within timeout period")
         except Exception as e:
