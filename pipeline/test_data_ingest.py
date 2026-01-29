@@ -194,14 +194,14 @@ class ImageIngestApp(Application):
     def __init__(self, *args, num_decompress_ops=4, **kwargs):
         """Initialize image ingestion test application."""
         self.num_decompress_ops = num_decompress_ops
-        self.stats = {}
         super().__init__(*args, **kwargs)
+        # Enable metadata feature
+        self.enable_metadata(True)
 
     def compose(self):
         """Compose image ingestion pipeline."""
         # Image source (same as main pipeline)
         img_src = ZmqRxImageBatchOp(self,
-                                    stats=self.stats,
                                     name="image_src",
                                     num_outputs=self.num_decompress_ops,
                                     dummy_img_index=False,
@@ -264,14 +264,14 @@ class BothIngestApp(Application):
     def __init__(self, *args, num_decompress_ops=4, **kwargs):
         """Initialize combined ingestion test application."""
         self.num_decompress_ops = num_decompress_ops
-        self.stats = {}
         super().__init__(*args, **kwargs)
+        # Enable metadata feature
+        self.enable_metadata(True)
 
     def compose(self):
         """Compose combined ingestion pipeline."""
         # Image source (same as main pipeline)
         img_src = ZmqRxImageBatchOp(self,
-                                    stats=self.stats,
                                     name="image_src",
                                     num_outputs=self.num_decompress_ops,
                                     dummy_img_index=False,
@@ -321,14 +321,14 @@ class SynchronizedIngestApp(Application):
     def __init__(self, *args, num_decompress_ops=4, **kwargs):
         """Initialize synchronized ingestion test application."""
         self.num_decompress_ops = num_decompress_ops
-        self.stats = {}
         super().__init__(*args, **kwargs)
+        # Enable metadata feature
+        self.enable_metadata(True)
 
     def compose(self):
         """Compose synchronized ingestion pipeline."""
         # Image source (same as main pipeline)
         img_src = ZmqRxImageBatchOp(self,
-                                    stats=self.stats,
                                     name="image_src",
                                     num_outputs=self.num_decompress_ops,
                                     dummy_img_index=False,
