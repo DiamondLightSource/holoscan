@@ -57,8 +57,10 @@ class StxmApp(Application):
         Note: num_decompress_ops is set from config before run() is called
         """
         self.num_decompress_ops = 4  # Default, will be overridden from config
-        self.stats = {}
         super().__init__(*args, **kwargs)
+        
+        # Enable metadata feature (enabled by default in v3.0+, but explicit is better)
+        self.enable_metadata(True)
 
     def compose(self):
         """
@@ -76,7 +78,6 @@ class StxmApp(Application):
     
         # ===== Image Data Source =====
         img_src = ZmqRxImageBatchOp(self,
-                            stats=self.stats,
                             name="image_src",
                             num_outputs=self.num_decompress_ops,
                             dummy_img_index=False,
@@ -127,7 +128,6 @@ class StxmApp(Application):
             "intensity_ids": "stxm_intensity_ids",
         }
         sink_and_publish_op = SinkAndPublishOp(self,
-                                               stats=self.stats,
                                                tensor2subject=tensor2subject,
                                                publish_backend=publish_backend,
                                                **self.kwargs('sink_and_publish_op'),
@@ -138,7 +138,6 @@ class StxmApp(Application):
         temp_folder = self.kwargs('sink_and_publish_op')['temp_folder']
 
         publish_to_cloud_op = PublishToCloudOp(self,
-                                               stats=self.stats,
                                                publish_folder=publish_folder,
                                                temp_folder=temp_folder,
                                                name="publish_to_cloud_op")
@@ -147,7 +146,6 @@ class StxmApp(Application):
         flushable_ops = [gather_op, position_src, sink_and_publish_op]
 
         control_op = ControlOp(self,
-                               stats=self.stats,
                                flushable_ops=flushable_ops,
                                publish_backend=publish_backend,
                                name="control_op")

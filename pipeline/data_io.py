@@ -266,7 +266,6 @@ class ZmqRxImageBatchOp(Operator):
                  receive_timeout_ms: int = 1000,
                  batch_size: int = 10000,
                  num_outputs: int = 2,
-                 stats: dict = None,
                  **kwargs):
         """
         Initialize ZMQ image batch receiver.
@@ -278,7 +277,6 @@ class ZmqRxImageBatchOp(Operator):
             receive_timeout_ms: Timeout for receiving messages in milliseconds
             batch_size: Number of images per batch
             num_outputs: Number of output ports for load balancing
-            stats: Shared statistics dictionary
         """
         self.logger = logging.getLogger(kwargs.get("name", "ZmqRxImageBatchOp"))
         logging.basicConfig(level=logging.INFO)
@@ -290,11 +288,13 @@ class ZmqRxImageBatchOp(Operator):
 
         self.current_output = 0
         self.num_outputs = num_outputs
-        self.stats = stats
-        self.stats[f"series_frame_count"] = 0
-        self.stats[f"series_start_time"] = 0
-        self.stats[f"first_frame_flag"] = True
-        self.stats[f"series_id"] = None
+        
+        # Local state tracking (not shared, will be sent via metadata)
+        self.series_frame_count = 0
+        self.series_start_time = 0.0
+        self.first_frame_flag = True
+        self.series_id = None
+        self.series_finished = False
         
         self.dummy_img_index = dummy_img_index
 
@@ -323,7 +323,7 @@ class ZmqRxImageBatchOp(Operator):
             cbor_type, data, data_id, msg_content = receive_cbor_message(msg)
             
             if cbor_type == "image":
-                self.stats[f"series_frame_count"] += 1
+                self.series_frame_count += 1
             else:
                 self.logger.info(f"Received message of type {cbor_type}")
             return cbor_type, data, data_id, msg_content
@@ -331,8 +331,20 @@ class ZmqRxImageBatchOp(Operator):
             self.logger.debug("No message received within timeout period")
             return None
     
+    def _set_series_metadata(self, include_finished=False):
+        """Set common series metadata fields before emitting.
+        
+        Args:
+            include_finished: If True, also sets series_finished flag
+        """
+        self.metadata.set("series_id", self.series_id)
+        self.metadata.set("series_frame_count", self.series_frame_count)
+        self.metadata.set("series_start_time", self.series_start_time)
+        if include_finished:
+            self.metadata.set("series_finished", True)
+    
     def compute(self, op_input, op_output, context):
-        """Receive messages and emit batches."""
+        """Receive messages and emit batches with metadata."""
         while True:
             msg = self.receive_msg()
             if msg is None:
@@ -341,38 +353,45 @@ class ZmqRxImageBatchOp(Operator):
             cbor_type, data, data_id, msg_content = msg
             
             if cbor_type == "start":
-                # Reset on start message
-                self.stats["series_frame_count"] = 0
-                self.stats["first_frame_flag"] = True
-                self.stats["series_finished"] = False
-                self.stats["series_id"] = msg_content["series_id"]
+                # Reset local state on start message
+                self.series_frame_count = 0
+                self.first_frame_flag = True
+                self.series_finished = False
+                self.series_id = msg_content["series_id"]
+                
+                # Set metadata for new series
+                self._set_series_metadata()
+                
                 op_output.emit("flush", "flush")
                 break
                 
             if cbor_type == "end":
                 # Emit remaining batch on end message
                 if self.current_index > 0:
+                    # Set metadata before final emit
+                    self._set_series_metadata(include_finished=True)
+                    
                     output_port = f"batch_{self.current_output}"
                     op_output.emit((self.batch[:self.current_index], self.batch_ids[:self.current_index]), output_port)
                     self.current_output = (self.current_output + 1) % self.num_outputs
                 self.current_index = 0
                 
-                self.stats["series_finished"] = True
-                _n = self.stats[f"series_frame_count"]
-                _elapsed = time.time() - self.stats[f"series_start_time"]
-                _rate = _n/_elapsed
+                self.series_finished = True
+                _n = self.series_frame_count
+                _elapsed = time.time() - self.series_start_time
+                _rate = _n/_elapsed if _elapsed > 0 else 0
                 self.logger.info(f"Received {_n} messages in {_elapsed:.1f}s. at speed: {_rate:.1f} Hz")
                 break
                 
             else:
                 # Image message
-                if self.stats["first_frame_flag"]:
-                    self.stats["series_start_time"] = time.time()
-                    self.stats["first_frame_flag"] = False
+                if self.first_frame_flag:
+                    self.series_start_time = time.time()
+                    self.first_frame_flag = False
 
                 self.batch[self.current_index] = data
                 if self.dummy_img_index:
-                    self.batch_ids[self.current_index] = self.stats["series_frame_count"] - 1
+                    self.batch_ids[self.current_index] = self.series_frame_count - 1
                 else:
                     # self.logger.info(f"Received image with id: {data_id}")
                     self.batch_ids[self.current_index] = data_id
@@ -380,7 +399,11 @@ class ZmqRxImageBatchOp(Operator):
                 self.current_index += 1
 
             if self.current_index >= self.batch_size:
+                # Set metadata with current frame count and series info before emitting
+                self._set_series_metadata()
+                
                 # Emit full batch through rotating output ports
+                # Metadata automatically flows with the data
                 output_port = f"batch_{self.current_output}"
                 op_output.emit((self.batch.copy(), self.batch_ids.copy()), output_port)
                 self.current_index = 0

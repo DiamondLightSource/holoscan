@@ -17,7 +17,6 @@ class ControlOp(Operator):
     """
     
     def __init__(self, fragment, *args,
-                 stats: dict = None,
                  flushable_ops: list[Operator] = None,
                  publish_backend = None,
                  **kwargs):
@@ -26,7 +25,6 @@ class ControlOp(Operator):
         
         Args:
             fragment: Holoscan fragment
-            stats: Shared statistics dictionary
             flushable_ops: List of operators that can be flushed
             publish_backend: Backend instance for publishing flush messages
         """

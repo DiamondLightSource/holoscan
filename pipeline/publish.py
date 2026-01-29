@@ -75,7 +75,6 @@ class SinkAndPublishOp(Operator):
     """
     
     def __init__(self, fragment, *args,
-                 stats: dict = None,
                  tensor2subject: dict[str, str] = None,
                  publish_folder=None,
                  publish_tensors: list[str] = None,
@@ -89,7 +88,6 @@ class SinkAndPublishOp(Operator):
         
         Args:
             fragment: Holoscan fragment
-            stats: Shared statistics dictionary
             tensor2subject: Mapping of tensor names to subjects/topics
             publish_folder: Folder for final published data
             publish_tensors: List of tensors to include in published files
@@ -99,9 +97,11 @@ class SinkAndPublishOp(Operator):
             backend_endpoint: Endpoint for backend - used if publish_backend is None
         """
         self.logger = logging.getLogger(kwargs.get("name", "SinkAndPublishOp"))
-        self.stats = stats
-        self.stats[f"processed_frame_count"] = 0
-        self.stats[f"processed_batch_count"] = 0
+        
+        # Local counters (not shared)
+        self.processed_frame_count = 0
+        self.processed_batch_count = 0
+        
         self.publish_folder = publish_folder
         self.publish_tensors = publish_tensors if publish_tensors is not None else []
         self.tensor2subject = tensor2subject
@@ -133,17 +133,17 @@ class SinkAndPublishOp(Operator):
         mode = 'a' if os.path.exists(filepath) else 'w'
         
         with h5py.File(filepath, mode) as f:
-            dataset_key = f"batch_{self.stats['processed_batch_count']}"
+            dataset_key = f"batch_{self.processed_batch_count}"
             data = np.concatenate(array_list, axis=1)
             f.create_dataset(dataset_key, data=data)
 
     def flush(self):
         """Reset counters on flush."""
-        self.stats[f"processed_frame_count"] = 0
-        self.stats[f"processed_batch_count"] = 0
+        self.processed_frame_count = 0
+        self.processed_batch_count = 0
 
     def compute(self, op_input, op_output, context):
-        """Receive, publish, and save processed data."""
+        """Receive, publish, and save processed data using metadata."""
         # Initialize backend on first call
         if self.backend is None:
             if self.backend_type == "nats":
@@ -161,11 +161,18 @@ class SinkAndPublishOp(Operator):
         if self.tensor2subject is None:
             return
         
+        # Receive data - metadata is automatically merged from upstream
         data = op_input.receive("input")
         
         if data is None:
             time.sleep(0.1)
             return
+            
+        # Read metadata that flowed from upstream operators
+        series_id = self.metadata.get("series_id")
+        series_frame_count = self.metadata.get("series_frame_count", 0)
+        series_start_time = self.metadata.get("series_start_time", 0.0)
+        
         # self.logger.info(f"Received data with keys {data.keys()}")
         # Handle simple array case
         if isinstance(data, np.ndarray) and len(self.tensor2subject) == 1:
@@ -189,22 +196,22 @@ class SinkAndPublishOp(Operator):
                         tensor = tensor.reshape(-1, 1)
                     arrays_to_publish.append(tensor)
         
-        # Save to temporary file
+        # Save to temporary file using series_id from metadata
         if self.publish_folder is not None:
-            if len(arrays_to_publish) > 0:
-                self.publish_to_folder(arrays_to_publish, self.stats["series_id"])
+            if len(arrays_to_publish) > 0 and series_id is not None:
+                self.publish_to_folder(arrays_to_publish, series_id)
             
-        self.stats["processed_batch_count"] += 1
-        self.stats[f"processed_frame_count"] += tensor.shape[0]
+        self.processed_batch_count += 1
+        self.processed_frame_count += tensor.shape[0]
         
-        # Check if processing is complete
-        if self.stats[f"processed_frame_count"] == self.stats[f"series_frame_count"]:
+        # Check if processing is complete using metadata from upstream
+        if self.processed_frame_count == series_frame_count:
             op_output.emit("processing_end", "processing_end")
 
-            _n = self.stats[f"processed_frame_count"]
-            _b = self.stats[f"processed_batch_count"]
-            _elapsed = time.time() - self.stats[f"series_start_time"]
-            _rate = _n/_elapsed
+            _n = self.processed_frame_count
+            _b = self.processed_batch_count
+            _elapsed = time.time() - series_start_time if series_start_time > 0 else 0
+            _rate = _n/_elapsed if _elapsed > 0 else 0
             self.logger.info(f"{_n} processed in {_elapsed:.1f}s. speed: {_rate:.1f} Hz (in {_b} batches)")
 
 
@@ -217,7 +224,6 @@ class PublishToCloudOp(Operator):
     """
     
     def __init__(self, fragment,
-                 stats: dict = None,
                  publish_folder: str = None,
                  temp_folder: str = None,
                  *args, **kwargs):
@@ -226,12 +232,10 @@ class PublishToCloudOp(Operator):
         
         Args:
             fragment: Holoscan fragment
-            stats: Shared statistics dictionary
             publish_folder: Final destination folder
             temp_folder: Source temporary folder
         """
         self.logger = logging.getLogger(kwargs.get("name", "PublishToCloudOp"))
-        self.stats = stats
         self.publish_folder = publish_folder
         self.temp_folder = temp_folder
         super().__init__(fragment, *args, **kwargs)
@@ -240,14 +244,20 @@ class PublishToCloudOp(Operator):
         spec.input("trigger")
 
     def compute(self, op_input, op_output, context):
-        """Consolidate and publish dataset on trigger."""
+        """Consolidate and publish dataset on trigger using metadata."""
+        # Receive trigger - metadata is automatically merged
         trigger = op_input.receive("trigger")
+        
         if trigger == "processing_end":
             if self.publish_folder is None or self.temp_folder is None:
                 return
 
-            # Get the series ID from stats
-            series_id = self.stats["series_id"]
+            # Get the series ID from metadata that flowed from upstream
+            series_id = self.metadata.get("series_id")
+            
+            if series_id is None:
+                self.logger.warning("No series_id found in metadata, cannot publish")
+                return
 
             temp_file = os.path.join(self.temp_folder, f"{series_id}.h5")
             if not os.path.exists(temp_file):
