@@ -174,20 +174,14 @@ class ZmqRxPositionOp(Operator):
         except zmq.error.ZMQError:
             self.logger.error("Failed to create socket")
 
-        # Track cumulative position count for calculating position IDs
-        self.cumulative_position_count = 0
-        self.last_frame_number = None
-
         super().__init__(fragment, *args, **kwargs)
 
     def setup(self, spec: OperatorSpec):
         spec.output("positions")
     
     def flush(self):
-        """Reset cumulative position count when starting a new series."""
-        self.cumulative_position_count = 0
-        self.last_frame_number = None
-        self.logger.info("Position receiver flushed - cumulative count reset")
+        """Flush position receiver state when starting a new series."""
+        self.logger.info("Position receiver flushed")
 
     def compute(self, op_input, op_output, context):
         """Receive and emit position data."""
@@ -198,31 +192,17 @@ class ZmqRxPositionOp(Operator):
             msg_type = msg.get("msg_type", "data")  # Default to "data" for backward compatibility
             
             if msg_type == "start":
-                # Handle start message - reset state for new acquisition
+                # Handle start message
                 arm_time = msg.get("arm_time")
                 start_time = msg.get("start_time")
                 self.logger.info(f"Received START message: arm_time={arm_time}, start_time={start_time}")
-                
-                # Reset state for new acquisition
-                self.cumulative_position_count = 0
-                self.last_frame_number = None
-                self.logger.info("Reset position tracking for new acquisition")
                 return
             
             elif msg_type == "data":
                 # Handle data message
-                
-                
-                # Extract frame_number from message (number of emitted batches)
-                frame_number = msg.get("frame_number", 0)
-                
-                # Detect wrap-around BEFORE calculating position_ids
-                # When frame_number goes from N (N>0) to 0, positions have wrapped around
-                if self.last_frame_number is not None and frame_number == 0 and self.last_frame_number > 0:
-                    self.logger.info(f"Detected position array wrap-around (frame_number: {self.last_frame_number} -> 0), resetting cumulative count to 0")
-                    self.cumulative_position_count = 0
-                
                 datasets = msg["datasets"]
+                
+                # Extract position data
                 x = np.array(datasets["/FMC_IN.VAL1.Mean"]["data"])
                 y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
                 z = np.array(datasets["/FMC_IN.VAL3.Mean"]["data"])
@@ -230,15 +210,21 @@ class ZmqRxPositionOp(Operator):
                 positions = np.stack([x, y, z, th], axis=1)
                 batch_size = positions.shape[0]
                 
-                # Calculate position_ids using cumulative position count (after potential wrap reset)
-                # position_ids = cumulative_count + np.arange(batch_size)
-                position_ids = self.cumulative_position_count + np.arange(batch_size)
+                # Get starting_sample_number and size from the message
+                # All datasets should have the same starting_sample_number and size
+                starting_sample_number = datasets["/FMC_IN.VAL1.Mean"]["starting_sample_number"]
+                batch_size = datasets["/FMC_IN.VAL1.Mean"]["size"]
                 
-                self.logger.info(f"Received position batch: frame_number={frame_number}, batch_size={batch_size}, position_ids={position_ids[0]}-{position_ids[-1]}")
+                # Calculate position_ids directly from starting_sample_number
+                position_ids = starting_sample_number + np.arange(batch_size)
                 
-                # Update tracking variables
-                self.cumulative_position_count += batch_size
-                self.last_frame_number = frame_number
+                frame_number = msg.get("frame_number", 0)
+                self.logger.info(
+                    f"Received position batch: frame_number={frame_number}, "
+                    f"starting_sample_number={starting_sample_number}, "
+                    f"batch_size={batch_size}, "
+                    f"position_ids={position_ids[0]}-{position_ids[-1]}"
+                )
                 
                 op_output.emit((positions, position_ids), "positions")
             
