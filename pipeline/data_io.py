@@ -322,10 +322,7 @@ class ZmqRxImageBatchOp(Operator):
             msg = self.socket.recv()
             cbor_type, data, data_id, msg_content = receive_cbor_message(msg)
             
-            if cbor_type == "image":
-                self.series_frame_count += 1
-            else:
-                self.logger.info(f"Received message of type {cbor_type}")
+
             return cbor_type, data, data_id, msg_content
         except zmq.error.Again:
             self.logger.debug("No message received within timeout period")
@@ -395,7 +392,7 @@ class ZmqRxImageBatchOp(Operator):
                 else:
                     # self.logger.info(f"Received image with id: {data_id}")
                     self.batch_ids[self.current_index] = data_id
-                
+                self.series_frame_count += 1
                 self.current_index += 1
 
             if self.current_index >= self.batch_size:
