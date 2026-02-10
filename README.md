@@ -3,25 +3,41 @@
 ## Quick start
 The pipeline files are located in `./pipeline`. Currently, stxm processing is supported; ptycho is under development.
 
-To build Holoscan container:
-```
+### Docker + Pixi (recommended)
+The image uses [pixi](https://pixi.sh/) for the environment. The repo is mounted into `/workdir` so `pipeline/` and `pixi.toml` (and other `pixi.*` files) live in the same workspace—no image rebuild when you change code or add dependencies.
+
+Build the container:
+```bash
 ./build_container.sh
 ```
-To run the container:
-```
+
+Run a shell (NATS starts automatically on port 6000). The current directory is mounted at `/workdir`:
+```bash
 ./run_container.sh
 ```
-The NATS server with JetStream will start automatically on port 6000.
 
-To run the app:
-```
-python pipeline.py --config holoscan_config.yaml
+Inside the container, install the pixi environment once (and again whenever you change `pixi.toml`):
+```bash
+pixi install
 ```
 
-To run a test for connectivity with the detector, run the following command:
+Then run the pipeline:
+```bash
+pixi run python pipeline/pipeline.py --config pipeline/config_test.yaml
+# or
+pixi run run-pipeline
 ```
-python test_data_ingest.py --mode both --config holoscan_config.yaml
+
+To run the pipeline directly from the host (container will use existing pixi env if present):
+```bash
+./run_container.sh pixi run run-pipeline
 ```
+
+Test connectivity with the detector:
+```bash
+pixi run python pipeline/test_data_ingest.py --mode both --config pipeline/config_test.yaml
+```
+
 
 ## Pipeline Structure
 
