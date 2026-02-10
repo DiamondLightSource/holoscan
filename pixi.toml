@@ -1,0 +1,38 @@
+[workspace]
+name = "dls-i13-beamline"
+version = "0.1.0"
+description = "STXM pipeline with Holoscan (DLS I13 beamline)"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[system-requirements]
+libc = { family = "glibc", version = "2.35" }
+cuda = "12.6"
+
+[dependencies]
+python = ">=3.11,<3.12"
+# Core scientific stack
+numpy = ">=1.26,<2"
+scipy = ">=1.14"
+# I/O and messaging
+h5py = ">=3.15"
+hdf5plugin = ">=6"
+pyzmq = ">=26"
+cbor2 = ">=5.6,<6"
+# MPI and profiling
+mpi4py = ">=4.0"
+nvtx = ">=0.2"
+# NATS client
+nats-py = ">=2.10"
+# Utilities
+attrs = "*"
+matplotlib = ">=3.9"
+
+[pypi-dependencies]
+holoscan = ">=3.10,<4"
+cupy-cuda12x = ">=13,<14"
+# DECTRIS compression (PyPI-only)
+dectris-compression = ">=0.3"
+
+[tasks]
+run-pipeline = "python pipeline/pipeline.py --config pipeline/config_test.yaml"
