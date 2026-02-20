@@ -1,0 +1,36 @@
+# Git and IDE
+.git
+.github
+.idea
+.vscode
+
+# Pixi envs (rebuilt in image)
+.pixi
+
+# Python
+__pycache__
+*.py[cod]
+*.pyo
+*.pyc
+.Python
+*.so
+.venv
+venv
+env
+
+# Build / packaging
+build
+dist
+*.egg-info
+*.egg
+
+# Tests and docs (optional: remove to include in image)
+htmlcov
+.tox
+.coverage
+.pytest_cache
+*.md
+
+# Other
+.gitignore
+.dockerignore
