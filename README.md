@@ -1,6 +1,28 @@
 # Holoscan pipeline for real-time processing of imaging data
 
-## Quick start
+## Running Ptyrex in Joint Container (Current Directions)
+
+Build the container:
+```bash
+docker build -t holoscan-ptyrex .
+```
+
+Run the container:
+```bash
+docker run --gpus all -v /path/to/test_data:/workdir/data -it holoscan-ptyrex
+```
+
+Run ptyrex reconstruction (use alias python-pty):
+```bash
+python-pty ./ptyrex_recon -c /workdir/data/config.json -p 0
+```
+
+View and save plots of reconstructed data:
+```bash
+python-pty ./ptyrex_save_view -i ../pty_out/example.hdf -o ../pty_out/example.png
+```
+
+## Quick start: STXM Pipeline
 The pipeline files are located in `./pipeline`. Currently, stxm processing is supported; ptycho is under development.
 
 ### Docker + Pixi (recommended)
