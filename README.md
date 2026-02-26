@@ -2,6 +2,11 @@
 
 ## Running Ptyrex in Joint Container (Current Directions)
 
+If running for the first time on a new computer, run pixi install to regenerate pixi environment:
+```bash
+pixi install
+```
+
 Build the container:
 ```bash
 docker build -t holoscan-ptyrex .
