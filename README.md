@@ -4,7 +4,7 @@
 
 *NOTE*: This branch includes PtyREX as a git submodule. When pulling this branch, make sure to pull the submodule code as well using the following command:
 ```bash
-git submodule update --init recursive
+git submodule update --init --recursive
 ```
 
 Make sure computer has pixi installed, which is used for package management. 
