@@ -2,6 +2,17 @@
 
 ## Running Ptyrex in Joint Container (Current Directions)
 
+*NOTE*: This branch includes PtyREX as a git submodule. When pulling this branch, make sure to pull the submodule code as well using the following command:
+```bash
+git submodule update --init recursive
+```
+
+Make sure computer has pixi installed, which is used for package management. 
+If not, install using:
+```bash
+curl -fsSL https://pixi.sh/install.sh | bash
+```
+
 If running for the first time on a new computer, run pixi install to regenerate pixi environment:
 ```bash
 pixi install
