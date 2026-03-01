@@ -96,3 +96,5 @@ daqdup/streamproxy/streamproxy
 
 # Application logs
 pipeline/legacy/zmq_panda_output.log
+
+test_data/
