@@ -2,7 +2,7 @@
 name = "dls-i13-beamline"
 version = "0.1.0"
 description = "STXM pipeline with Holoscan (DLS I13 beamline)"
-channels = ["conda-forge"]
+channels = ["conda-forge", "nvidia"]
 platforms = ["linux-64"]
 
 [system-requirements]
@@ -10,19 +10,31 @@ libc = { family = "glibc", version = "2.35" }
 cuda = "12.6"
 
 [dependencies]
-python = ">=3.11,<3.12"
+python = "3.11.10.*"
+pip = "*"
+
 # Core scientific stack
-numpy = ">=1.26,<2"
-scipy = ">=1.14"
+numpy = "2.1.2.*" # Updated Holoscan to use the newer numpy
+pandas = "2.2.2.*"
+scipy = "1.14.1.*"
+scikit-learn = "1.5.2.*"  # required by PtyREX (toolbox)
+
 # I/O and messaging
-h5py = ">=3.15"
-hdf5plugin = ">=6"
+h5py = "3.11.0.*"
+hdf5plugin = "*"
 pyzmq = ">=26"
 cbor2 = ">=5.6,<6"
+
+# MPI
+openmpi = "4.1.6.*"
+mpi4py = "3.1.6.*"
+
 # Profiling
 nvtx = ">=0.2"
+
 # NATS client
 nats-py = ">=2.10"
+
 # Utilities
 attrs = "*"
 matplotlib = ">=3.9"
@@ -30,6 +42,10 @@ matplotlib = ">=3.9"
 [pypi-dependencies]
 holoscan = ">=3.10,<4"
 cupy-cuda12x = ">=13,<14"
+pycuda = "*"
+pyfftw = "==0.14.0"
+scikit-cuda = "==0.5.3"
+
 # DECTRIS compression (PyPI-only)
 dectris-compression = ">=0.3"
 
