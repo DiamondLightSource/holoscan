@@ -1,81 +1,79 @@
 # Holoscan pipeline for real-time processing of imaging data
 
-## Running Ptyrex in Joint Container (Current Directions)
+The image provides a unified [pixi](https://pixi.sh/) environment for the STXM pipeline (Holoscan) and PtyREX. Source is mounted at runtime so you can edit code on the host and run inside the container without rebuilding.
 
-*NOTE*: This branch includes PtyREX as a git submodule. When pulling this branch, make sure to pull the submodule code as well using the following command:
-```bash
-git submodule update --init --recursive
-```
+## Prerequisites
 
-Make sure computer has pixi installed, which is used for package management. 
-If not, install using:
-```bash
-curl -fsSL https://pixi.sh/install.sh | bash
-```
+- Docker with NVIDIA GPU support (`--gpus all` / `--runtime=nvidia`).
+- **NOTE**: This branch includes PtyREX as a git submodule. When pulling this branch, make sure to pull the submodule code as well using the following command:
+  ```bash
+  git submodule update --init --recursive
+  ```
 
-If running for the first time on a new computer, run pixi install to regenerate pixi environment:
-```bash
-pixi install
-```
-
-Build the container:
-```bash
-docker build -t holoscan-ptyrex .
-```
-
-Run the container:
-```bash
-docker run --gpus all -v /path/to/test_data:/workdir/data -it holoscan-ptyrex
-```
-
-Run ptyrex reconstruction (use alias python-pty):
-```bash
-python-pty ./ptyrex_recon -c /workdir/data/config.json -p 0
-```
-
-View and save plots of reconstructed data:
-```bash
-python-pty ./ptyrex_save_view -i ../pty_out/example.hdf -o ../pty_out/example.png
-```
-
-## Quick start: STXM Pipeline
-The pipeline files are located in `./pipeline`. Currently, stxm processing is supported; ptycho is under development.
-
-### Docker + Pixi (recommended)
-The image uses [pixi](https://pixi.sh/) for the environment. The repo is mounted into `/workdir` so `pipeline/` and `pixi.toml` (and other `pixi.*` files) live in the same workspace—no image rebuild when you change code or add dependencies.
+## Build and run
 
 Build the container:
 ```bash
 ./build_container.sh
 ```
 
-Run a shell (NATS starts automatically on port 6000). The current directory is mounted at `/workdir`:
+Run a shell (NATS starts on port 6000; `pipeline/`, `PtyREX/`, and `test_data/` are mounted under `/workdir`):
 ```bash
 ./run_container.sh
 ```
 
-Inside the container, install the pixi environment once (and again whenever you change `pixi.toml`):
+
+
+## Inside the container
+
+### Install PtyREX (once per session)
+
+Install the mounted PtyREX package into the pixi environment so reconstruction and tools work:
 ```bash
-pixi install
+pixi run install-ptyrex
 ```
 
-Then run the pipeline:
+### Holoscan pipeline
+
+start pixi shell:
 ```bash
-pixi run python pipeline/pipeline.py --config pipeline/config_test.yaml
+pixi shell
+```
+
+Run the STXM pipeline:
+```bash
+# from the pixi shell
+python pipeline/pipeline.py --config pipeline/config_prod.yaml
 # or
-pixi run run-pipeline
+cd pipeline
+python pipeline.py --config config_prod.yaml
 ```
 
-To run the pipeline directly from the host (container will use existing pixi env if present):
+Test pipeline functionality:
 ```bash
-./run_container.sh pixi run run-pipeline
+# from the pixi shell
+python pipeline/test_data_ingest.py --mode both --config pipeline/config_test.yaml
+# or
+cd pipeline
+python test_data_ingest.py --mode both --config config_test.yaml
+#or
+python pipeline.py --config config_test.yaml
 ```
 
-Test connectivity with the detector:
+### PtyREX reconstruction
+
+Using test data mounted at `/workdir/test_data`:
 ```bash
-pixi run python pipeline/test_data_ingest.py --mode both --config pipeline/config_test.yaml
+# from the pixi shell
+python ./PtyREX/ptyrex_recon -c /workdir/test_data/config.json -p 0
 ```
 
+### PtyREX visualization
+
+View and save plots of reconstructed data (use paths to your HDF output and desired image):
+```bash
+python ./PtyREX/ptyrex_save_view -i /workdir/test_data/pty_out/<file>.hdf -o /workdir/test_data/pty_out/output.png
+```
 
 ## Pipeline Structure
 

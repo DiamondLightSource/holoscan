@@ -26,20 +26,13 @@ RUN wget -qO - https://developer.download.nvidia.com/devtools/repos/ubuntu2204/a
 WORKDIR /workdir
 
 # 5. Unified Environment Setup
-# Copy manifest only; generate lock and install in-builder (PtyREX folder must exist for the pip install later)
+# Copy manifest only; generate lock and install. Source (pipeline, PtyREX) is mounted at runtime.
 COPY pixi.toml ./
 
 RUN --mount=type=cache,target=/root/.cache/rattler \
-    pixi lock && pixi install --locked
+    pixi install
 
-# 6. Copy source code
-COPY . .
-
-# 7. Install PtyREX as a package into the unified environment
-RUN --mount=type=cache,target=/root/.cache/rattler \
-    pixi run pip install --no-deps ./PtyREX
-
-# --- MPI & PATH CONFIGURATION ---
+# 6. MPI & PATH CONFIGURATION
 # These go here so they are set for the final image
 ENV PATH="/workdir/.pixi/envs/default/bin:${PATH}"
 ENV OPAL_PREFIX="/workdir/.pixi/envs/default"
@@ -48,7 +41,7 @@ ENV OMPI_ALLOW_RUN_AS_ROOT=1
 ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 ENV PYTHONUNBUFFERED=1
 
-# 8. Entrypoint
+# 7. Entrypoint
 COPY start_nats_server.sh /usr/local/bin/start_nats_server.sh
 RUN chmod +x /usr/local/bin/start_nats_server.sh
 
