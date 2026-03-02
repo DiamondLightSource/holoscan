@@ -36,6 +36,8 @@ sink_and_publish_op:
 ptychography:
   enabled: true
   ptyrex_config: "/path/to/prod_config.json"
+  scan_ID: [1, 1, 1]
+  ID: [1, 1, 1]
   no_frames: 1024
   batch_size: 128
   total_iterations: 100

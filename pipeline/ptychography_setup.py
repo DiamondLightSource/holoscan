@@ -10,6 +10,7 @@ Builds the shared ptycho_state dict at application launch by:
 
 import threading
 import logging
+import time
 
 import numpy as np
 
@@ -32,6 +33,16 @@ class DummyJSplitter:
         @staticmethod
         def Bcast(data, root=0):
             return data
+
+
+class DummyPtyPlot:
+    """No-op stub for PtyREX's plotting object (required by setup routines)."""
+
+    def init(self, *args, **kwargs):
+        pass
+
+    def update(self, *args, **kwargs):
+        pass
 
 
 def init_ptycho_state(ptycho_cfg: dict) -> dict:
@@ -65,6 +76,11 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
     R = ptycho_cfg["R"]
     pty_params.total_iterations = ptycho_cfg["total_iterations"]
 
+    # Ensure string attributes expected by PtyREX save/config routines
+    pty_params.recon_name = time.strftime("%Y%m%d-%H%M%S")
+    pty_data.ID = str(pty_data.ID[0]) if isinstance(pty_data.ID, list) else str(pty_data.ID)
+    pty_data.scan_ID = str(pty_data.scan_ID[0]) if isinstance(pty_data.scan_ID, list) else str(pty_data.scan_ID)
+
     # 3. Dummy jsplitter for single-rank pipeline
     pty_params.jsplitter = DummyJSplitter()
 
@@ -80,8 +96,9 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
     pty_model.scan.sz = [no_frames, 1]
     pty_data.reg_ind = pty_model.scan.reg_ind
 
-    pty_data, pty_model, pty_params, _ = setup.before_reconstruction_stream(
-        pty_data, pty_model, pty_params, None, R, no_frames
+    pty_plot = DummyPtyPlot()
+    pty_data, pty_model, pty_params, pty_plot = setup.before_reconstruction_stream(
+        pty_data, pty_model, pty_params, pty_plot, R, no_frames
     )
 
     # 5. Remaining setup from pre_process_reconstruct_hardcode
