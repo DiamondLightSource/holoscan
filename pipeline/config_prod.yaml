@@ -32,4 +32,15 @@ sink_and_publish_op:
   backend_endpoint: "tcp://localhost:6010"  # ZMQ endpoint or NATS host:port
   # backend: "nats"  # Options: "nats" or "zmq"
   # backend_endpoint: "localhost:6000"  # ZMQ endpoint or NATS host:port
-  
+
+ptychography:
+  enabled: true
+  ptyrex_config: "/path/to/prod_config.json"
+  no_frames: 1024
+  batch_size: 128
+  total_iterations: 100
+  post_stream_iterations: 10
+  housekeeping_interval: 10
+  publish_interval: 10
+  R: [175.79276, 202.33006]
+
