@@ -8,10 +8,12 @@ into a complete data processing pipeline.
 Pipeline Architecture:
     img_src -> decompress -> gather <- position_src
     gather -> masking_op -> publish
-    
+    gather -> [ptychography branch, when enabled]
+
 This separates I/O operations (data_io) from computation (processing).
 """
 
+import logging
 from argparse import ArgumentParser
 
 from holoscan.core import Application
@@ -37,6 +39,8 @@ except ImportError:
     HAS_NATS = False
     print("Warning: NATS not available, running without publishing")
 
+logger = logging.getLogger(__name__)
+
 
 class StxmApp(Application):
     """
@@ -51,15 +55,10 @@ class StxmApp(Application):
     """
     
     def __init__(self, *args, **kwargs):
-        """
-        Initialize STXM application.
-        
-        Note: num_decompress_ops is set from config before run() is called
-        """
-        self.num_decompress_ops = 4  # Default, will be overridden from config
+        self.num_decompress_ops = 4
+        self.ptychography_enabled = False
+        self.ptycho_state = None
         super().__init__(*args, **kwargs)
-        
-        # Enable metadata feature (enabled by default in v3.0+, but explicit is better)
         self.enable_metadata(True)
 
     def compose(self):
@@ -145,6 +144,45 @@ class StxmApp(Application):
         # ===== Control Operator =====
         flushable_ops = [gather_op, position_src, sink_and_publish_op]
 
+        # ===== Ptychography Branch (conditional) =====
+        if self.ptychography_enabled:
+            from ptychography_ops import (
+                PtychoAccumulatorOp,
+                PtychoReconstructionOp,
+                PtychoPublishOp,
+            )
+
+            ptycho_cfg = self.kwargs("ptychography")
+
+            ptycho_accum = PtychoAccumulatorOp(
+                self,
+                ptycho_state=self.ptycho_state,
+                name="ptycho_accumulator",
+            )
+
+            ptycho_recon = PtychoReconstructionOp(
+                self,
+                PeriodicCondition(self, int(0.01 * 1e9)),
+                ptycho_state=self.ptycho_state,
+                total_iterations=ptycho_cfg["total_iterations"],
+                post_stream_iterations=ptycho_cfg["post_stream_iterations"],
+                housekeeping_interval=ptycho_cfg["housekeeping_interval"],
+                publish_interval=ptycho_cfg["publish_interval"],
+                name="ptycho_reconstruction",
+            )
+
+            ptycho_publish = PtychoPublishOp(
+                self,
+                publish_backend=publish_backend,
+                tensor2subject={
+                    "object": "ptycho_object",
+                    "probe": "ptycho_probe",
+                },
+                name="ptycho_publish",
+            )
+
+            flushable_ops.append(ptycho_accum)
+
         control_op = ControlOp(self,
                                flushable_ops=flushable_ops,
                                publish_backend=publish_backend,
@@ -163,6 +201,11 @@ class StxmApp(Application):
         self.add_flow(gather_op, masking_op, {("output", "input")})
         self.add_flow(masking_op, sink_and_publish_op, {("output", "input")})
         
+        # Ptychography flows
+        if self.ptychography_enabled:
+            self.add_flow(gather_op, ptycho_accum, {("output", "input")})
+            self.add_flow(ptycho_recon, ptycho_publish, {("output", "input")})
+
         # Control path: flush and completion signals
         self.add_flow(img_src, control_op, {("flush", "input")})
         self.add_flow(sink_and_publish_op, control_op, {("processing_end", "input")})
@@ -185,20 +228,31 @@ def main():
 
     # Create application
     app = StxmApp()
-    
+
     # Load config to make kwargs available
     app.config(args.config)
-    
+
     # Get scheduler parameters from config via kwargs
     scheduler_config = app.kwargs('scheduler')
     num_decompress_ops = scheduler_config.get('num_decompress_ops', 4)
     worker_threads = scheduler_config.get('worker_threads', 6)
-    
+
     # Set num_decompress_ops - will be used in compose() when run() is called
     app.num_decompress_ops = num_decompress_ops
-    
+
+    # Ptychography setup (before compose)
+    ptycho_cfg = app.kwargs("ptychography")
+    if ptycho_cfg and ptycho_cfg.get("enabled", False):
+        from ptychography_setup import init_ptycho_state
+
+        logger.info("Initialising ptychography state…")
+        app.ptycho_state = init_ptycho_state(ptycho_cfg)
+        app.ptychography_enabled = True
+        worker_threads = max(worker_threads, 8)
+        logger.info("Ptychography enabled (worker_threads=%d)", worker_threads)
+
     print(f"Pipeline configuration: {num_decompress_ops} decompression operators, {worker_threads} worker threads")
-    
+
     # Set up scheduler with config values
     scheduler = MultiThreadScheduler(
             app,
@@ -208,7 +262,7 @@ def main():
             stop_on_deadlock_timeout=500,
             name="multithread_scheduler",
         )
-    
+
     app.scheduler(scheduler)
     app.run()
 
