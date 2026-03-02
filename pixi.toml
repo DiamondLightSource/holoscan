@@ -52,4 +52,4 @@ dectris-compression = ">=0.3"
 [tasks]
 run-pipeline = "python pipeline/pipeline.py --config pipeline/config_test.yaml"
 # Install PtyREX from mounted source (run once per container when developing)
-install-ptyrex = "pip install --no-deps -e ./PtyREX"
+install-ptyrex = "pip install --no-build-isolation  --no-deps -e ./PtyREX"
