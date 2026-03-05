@@ -1,75 +1,59 @@
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
-from queue import Empty
-# import asyncio
+from queue import Empty, Queue
 import sys
 from pathlib import Path
-
 import threading
-# import time
-from queue import Empty, Queue
 import json
 import time
-# Create nats instance
-import matplotlib.tri as tri    
+import matplotlib.tri as tri
 import matplotlib
 from argparse import ArgumentParser
 import zmq
-# Create nats instance with default host (will use environment variable)
 
+
+# ===================== Subscribe backends =====================
 
 class SubscribeBackend:
     """Base class for subscription backends."""
-    
+
     def get_queue(self, subject: str) -> Queue:
-        """Get the queue for a specific subject/topic."""
         raise NotImplementedError
 
 
 class NatsSubscribeBackend(SubscribeBackend):
     """NATS subscription backend."""
-    
+
     def __init__(self, host: str, subjects: tuple):
-        # Add parent directory to path to import nats_async
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from nats_async import launch_nats_instance
         self.nats_inst = launch_nats_instance(host=host, subscribe_subjects=subjects)
-    
+
     def get_queue(self, subject: str) -> Queue:
-        """Get the queue for a specific NATS subject."""
         return self.nats_inst.get_rxq(subject)
 
 
 class ZmqSubscribeBackend(SubscribeBackend):
     """ZMQ SUB backend."""
-    
+
     def __init__(self, endpoint: str, subjects: tuple):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
         self.socket.connect(endpoint)
-        
-        # Subscribe to all specified topics
         self.subjects = subjects
         for subject in subjects:
             self.socket.subscribe(subject.encode('utf-8'))
-        
-        # Create queues for each subject
         self.queues = {subject: Queue() for subject in subjects}
-        
-        # Start background thread to receive messages
         self.running = True
         self.thread = threading.Thread(target=self._receive_loop, daemon=True)
         self.thread.start()
-        
         print(f"ZMQ subscriber connected to {endpoint}")
-    
+
     def _receive_loop(self):
-        """Background thread to receive ZMQ messages and put them in queues."""
         while self.running:
             try:
-                # Non-blocking receive with timeout
-                if self.socket.poll(100):  # 100ms timeout
+                if self.socket.poll(100):
                     topic, data = self.socket.recv_multipart()
                     topic_str = topic.decode('utf-8')
                     if topic_str in self.queues:
@@ -77,33 +61,29 @@ class ZmqSubscribeBackend(SubscribeBackend):
             except Exception as e:
                 print(f"Error in ZMQ receive loop: {e}")
                 time.sleep(0.1)
-    
+
     def get_queue(self, subject: str) -> Queue:
-        """Get the queue for a specific ZMQ topic."""
         return self.queues[subject]
-    
+
     def close(self):
-        """Close ZMQ socket."""
         self.running = False
         self.thread.join(timeout=1.0)
         self.socket.close()
         self.context.term()
 
 
-def get_subscribe_backend(backend: str = "nats", endpoint: str = "localhost:6000"):
-    """
-    Get a subscription backend instance.
-    
-    Args:
-        backend: Backend type ('nats' or 'zmq')
-        endpoint: Connection endpoint (host:port for NATS, tcp://host:port for ZMQ)
-    
-    Returns:
-        SubscribeBackend instance
-    """
-    subjects = ("stxm_inner", "stxm_outer", "stxm_positions", 
-                "stxm_position_ids", "stxm_intensity_ids", "stxm_flush")
-    
+STXM_SUBJECTS = (
+    "stxm_inner", "stxm_outer", "stxm_positions",
+    "stxm_position_ids", "stxm_intensity_ids", "stxm_flush",
+)
+
+PTYCHO_SUBJECTS = (
+    "ptycho_object_phase", "ptycho_object_amp",
+    "ptycho_probe_phase", "ptycho_probe_amp",
+)
+
+
+def get_subscribe_backend(backend: str, endpoint: str, subjects: tuple):
     if backend == "nats":
         return NatsSubscribeBackend(endpoint, subjects)
     elif backend == "zmq":
@@ -111,7 +91,10 @@ def get_subscribe_backend(backend: str = "nats", endpoint: str = "localhost:6000
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
-data_dict = {
+
+# ===================== STXM data receiver =====================
+
+stxm_dict = {
     "outer": None,
     "inner": None,
     "positions": None,
@@ -121,265 +104,213 @@ data_dict = {
 }
 
 
-def receive_data():
-    global backend, data_dict
+def receive_stxm_data(sub_backend):
+    global stxm_dict
     while True:
+        for key, subject in (
+            ("outer", "stxm_outer"),
+            ("inner", "stxm_inner"),
+            ("positions", "stxm_positions"),
+            ("position_ids", "stxm_position_ids"),
+            ("intensity_ids", "stxm_intensity_ids"),
+        ):
+            try:
+                raw = sub_backend.get_queue(subject).get(block=False)
+                arr = np.array(json.loads(raw.decode()))
+                if stxm_dict[key] is None:
+                    stxm_dict[key] = arr.copy()
+                else:
+                    stxm_dict[key] = np.concatenate([stxm_dict[key], arr.copy()])
+            except Empty:
+                pass
+
         try:
-            outer = backend.get_queue("stxm_outer").get(block=False)
-            outer = np.array(json.loads(outer.decode()))
-            if data_dict["outer"] is None:
-                data_dict["outer"] = outer.copy()
-            else:
-                data_dict["outer"] = np.concatenate([data_dict["outer"], outer.copy()])
+            sub_backend.get_queue("stxm_flush").get(block=False)
+            print("STXM flush received")
+            for k in ("outer", "inner", "positions", "position_ids", "intensity_ids"):
+                stxm_dict[k] = None
+            stxm_dict["total_n"] = 0
         except Empty:
             pass
-        try:
-            inner = backend.get_queue("stxm_inner").get(block=False)
-            inner = np.array(json.loads(inner.decode()))
-            if data_dict["inner"] is None:
-                data_dict["inner"] = inner.copy()
-            else:
-                data_dict["inner"] = np.concatenate([data_dict["inner"], inner.copy()])
-        except Empty:
-            pass
-        try:
-            positions = backend.get_queue("stxm_positions").get(block=False)
-            positions = np.array(json.loads(positions.decode()))
-            if data_dict["positions"] is None:
-                data_dict["positions"] = positions.copy()
-            else:
-                data_dict["positions"] = np.concatenate([data_dict["positions"], positions.copy()])
-        except Empty:
-            pass
-        try:
-            position_ids = backend.get_queue("stxm_position_ids").get(block=False)
-            position_ids = np.array(json.loads(position_ids.decode()))
-            if data_dict["position_ids"] is None:
-                data_dict["position_ids"] = position_ids.copy()
-            else:
-                data_dict["position_ids"] = np.concatenate([data_dict["position_ids"], position_ids.copy()])
-        except Empty:
-            pass
-        try:
-            intensity_ids = backend.get_queue("stxm_intensity_ids").get(block=False)    
-            intensity_ids = np.array(json.loads(intensity_ids.decode()))
-            if data_dict["intensity_ids"] is None:
-                data_dict["intensity_ids"] = intensity_ids.copy()
-            else:
-                data_dict["intensity_ids"] = np.concatenate([data_dict["intensity_ids"], intensity_ids.copy()])
-        except Empty:
-            pass
-        
-        try:
-            flush = backend.get_queue("stxm_flush").get(block=False)
-            print(f"Got flush: {flush}")
-            data_dict["outer"] = None
-            data_dict["inner"] = None
-            data_dict["positions"] = None
-            data_dict["position_ids"] = None
-            data_dict["intensity_ids"] = None
-            data_dict["total_n"] = 0
-        except Empty:
-            pass
-        
-        if data_dict["inner"] is not None and data_dict["outer"] is not None and data_dict["positions"] is not None and data_dict["position_ids"] is not None and data_dict["intensity_ids"] is not None:
-            n_inner = data_dict["inner"].shape[0]
-            n_outer = data_dict["outer"].shape[0]
-            n_positions = data_dict["positions"].shape[0]
-            n_intensity_ids = data_dict["intensity_ids"].shape[0]
-            n_position_ids = data_dict["position_ids"].shape[0]
-            n = min(n_inner, n_outer, n_positions, n_intensity_ids, n_position_ids)
-            
-            # this is supposed to help but does not, some issue with desyncing when plotting
-            # pos_order = np.argsort(data_dict["position_ids"][:n])
-            # data_dict["positions"][:n] = data_dict["positions"][:n][pos_order]
-            # data_dict["position_ids"][:n] = data_dict["position_ids"][:n][pos_order]
-            
-            # int_order = np.argsort(data_dict["intensity_ids"][:n])
-            # data_dict["inner"][:n] = data_dict["inner"][:n][int_order]
-            # data_dict["outer"][:n] = data_dict["outer"][:n][int_order]
-            # data_dict["intensity_ids"][:n] = data_dict["intensity_ids"][:n][int_order]
-            
-            data_dict["total_n"] = n
+
+        fields = ("inner", "outer", "positions", "position_ids", "intensity_ids")
+        if all(stxm_dict[f] is not None for f in fields):
+            stxm_dict["total_n"] = min(stxm_dict[f].shape[0] for f in fields)
+
         time.sleep(0.01)
 
 
-def generate_figure(show_diagnostics: bool = False):
-    plt.style.use('dark_background')
-    fontsize = 7
-    matplotlib.rcParams.update({'font.size': fontsize})
-    if show_diagnostics:
-        fig, ((ax1, ax2), (ax3, ax4), (ax5, ax6), (ax7, ax8)) = plt.subplots(4, 2)
-    else:
-        fig, ((ax1, ax2)) = plt.subplots(2, 1)
+# ===================== Ptycho data receiver =====================
 
-    im1 = ax1.imshow(np.zeros((80,80))*np.nan, cmap='gray', vmin=0, vmax=1)
-    im2 = ax2.imshow(np.zeros((80,80))*np.nan, cmap='gray', vmin=0, vmax=1)
-    
-    if show_diagnostics:
-        line1 = ax3.plot([], [], color='white', linewidth=1)[0]
-        line2 = ax4.plot([], [], color='white', linewidth=1)[0]
-        line3 = ax5.plot([], [], color='white', linewidth=1)[0]
-        line4 = ax6.plot([], [], color='white', linewidth=1)[0]
-        line5 = ax7.plot([], [], color='white', linewidth=1)[0]
-        line6 = ax8.plot([], [], color='white', linewidth=1)[0]
-        for ax in [ax3, ax4, ax5, ax6, ax7, ax8]:
-            ax.set_xlim(0, 1000)
-            ax.set_ylim(-2, 2)
+ptycho_dict = {
+    "object_phase": None,
+    "object_amp": None,
+    "probe_phase": None,
+    "probe_amp": None,
+}
 
-    if show_diagnostics:
-        return fig, ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, im1, im2, line1, line2, line3, line4, line5, line6
-    else:
-        return fig, ax1, ax2, im1, im2
 
-def update_tricontour(ax, x, y, intensity_map):
-    global reset_limits
+def receive_ptycho_data(sub_backend):
+    global ptycho_dict
+    while True:
+        for key, subject in (
+            ("object_phase", "ptycho_object_phase"),
+            ("object_amp", "ptycho_object_amp"),
+            ("probe_phase", "ptycho_probe_phase"),
+            ("probe_amp", "ptycho_probe_amp"),
+        ):
+            try:
+                raw = sub_backend.get_queue(subject).get(block=False)
+                arr = np.squeeze(np.array(json.loads(raw.decode())))
+                if arr.ndim < 2:
+                    print(f"Ptycho {key}: skipping bad shape {arr.shape}")
+                    continue
+                ptycho_dict[key] = arr
+            except Empty:
+                pass
+        time.sleep(0.05)
+
+
+# ===================== Figure setup =====================
+
+def update_tricontour(ax, x, y, intensity_map, reset_lim=True):
     triang = tri.Triangulation(x, y)
     vmin = np.percentile(intensity_map, 3.5)
     vmax = np.percentile(intensity_map, 98.5)
     im = ax.tricontourf(triang, intensity_map, 51, cmap='gray', vmin=vmin, vmax=vmax)
-    if reset_limits:
-        ax.relim()
-        ax.autoscale_view()
+    if reset_lim:
         ax.set_xlim(x.min(), x.max())
         ax.set_ylim(y.min(), y.max())
     return im
 
-n_prev = 0
-def animate(i):
-    global im1, im2,  data_dict, n_prev, show_diagnostics, plot_batch
-    if show_diagnostics:
-        global  ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, line1, line2, line3, line4, line5, line6
-    
-    if data_dict["inner"] is None or data_dict["outer"] is None or data_dict["positions"] is None or data_dict["position_ids"] is None or data_dict["intensity_ids"] is None:
-        if show_diagnostics:
-            return im1, im2, line1, line2, line3, line4, line5, line6
-        else:
-            return im1, im2
-    
-    if data_dict["inner"] is not None and data_dict["outer"] is not None and data_dict["positions"] is not None and data_dict["position_ids"] is not None and data_dict["intensity_ids"] is not None:
-        n_inner = data_dict["inner"].shape[0]
-        n_outer = data_dict["outer"].shape[0]
-        n_positions = data_dict["positions"].shape[0]
-        n_intensity_ids = data_dict["intensity_ids"].shape[0]
-        n_position_ids = data_dict["position_ids"].shape[0]
-        n_new = min(n_inner, n_outer, n_positions, n_intensity_ids, n_position_ids)
-        if plot_batch is None:
-            if n_prev == n_new:
-                if show_diagnostics:
-                    return im1, im2, line1, line2, line3, line4, line5, line6
-                else:
-                    return im1, im2
-            n_prev = n_new
-            n_plot = n_new
-        else:
-            if n_new > plot_batch:
-                n_plot = plot_batch
-            else:
-                n_plot = n_new
 
-        x, y, z, th = data_dict["positions"][:n_plot].T
-        s_inner = data_dict["inner"][:n_plot]
-        s_outer = data_dict["outer"][:n_plot]
-        pos_ids = data_dict["position_ids"][:n_plot]
-        int_ids = data_dict["intensity_ids"][:n_plot]
-        
-        # clear the data if the full batch is plotted
-        if (plot_batch is not None) and (n_new >= plot_batch):
-            data_dict["positions"] = data_dict["positions"][plot_batch:]
-            data_dict["inner"] = data_dict["inner"][plot_batch:]
-            data_dict["outer"] = data_dict["outer"][plot_batch:]
-            data_dict["position_ids"] = data_dict["position_ids"][plot_batch:]
-            data_dict["intensity_ids"] = data_dict["intensity_ids"][plot_batch:]
-            
-            if data_dict["positions"].shape[0] == 0:
-                data_dict["positions"] = None
-            if data_dict["inner"].shape[0] == 0:
-                data_dict["inner"] = None
-            if data_dict["outer"].shape[0] == 0:
-                data_dict["outer"] = None
-            if data_dict["position_ids"].shape[0] == 0:
-                data_dict["position_ids"] = None
-            if data_dict["intensity_ids"].shape[0] == 0:
-                data_dict["intensity_ids"] = None
+def build_combined_figure():
+    """3-row x 2-col layout: STXM top, ptycho object middle, ptycho probe bottom."""
+    plt.style.use('dark_background')
+    matplotlib.rcParams.update({'font.size': 8})
 
-        print(f"{i} - Plotting data for {n_plot} frames")  
-    # print(f"Scanning within: {x.min()=}, {x.max()=}, {y.min()=}, {y.max()=}, {z.min()=}, {z.max()=}, {th.min()=}, {th.max()=}")
-            
-        # x_lab = x
-        # y_lab = y
+    fig = plt.figure(figsize=(10, 10))
+    gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.3)
 
-        th_rad = th.copy() * np.pi / 180
-        x_lab = (x.copy() * np.cos(th_rad) + z.copy() * np.sin(th_rad)) * -1
-        y_lab = y.copy() * -1
+    ax_stxm_outer = fig.add_subplot(gs[0, 0])
+    ax_stxm_inner = fig.add_subplot(gs[0, 1])
+    ax_obj_phase  = fig.add_subplot(gs[1, 0])
+    ax_obj_amp    = fig.add_subplot(gs[1, 1])
+    ax_prb_phase  = fig.add_subplot(gs[2, 0])
+    ax_prb_amp    = fig.add_subplot(gs[2, 1])
 
-        im1 = update_tricontour(ax1, x_lab, y_lab, s_outer)
-        im2 = update_tricontour(ax2, x_lab, y_lab, s_inner)
-        index = np.arange(len(x))
-        if show_diagnostics:
-            for data, line, ax in zip([x, y, z, th, pos_ids, int_ids], [line1, line2, line3, line4, line5, line6], [ax3, ax4, ax5, ax6, ax7, ax8]):
-            # for data, line, ax in zip([y], [line2], [ax4]):
-                line.set_xdata(index)
-                line.set_ydata(data)
-                ax.relim()
-                ax.autoscale_view()
-                ax.set_xlim(index.min(), index.max())
-                ax.set_ylim(data.min(), data.max())
-        if show_diagnostics:
-            return im1, im2, line1, line2, line3, line4, line5, line6
-        else:
-            return im1, im2
+    ax_stxm_outer.set_title("STXM Outer")
+    ax_stxm_inner.set_title("STXM Inner")
+    ax_obj_phase.set_title("Object Phase")
+    ax_obj_amp.set_title("Object Amplitude")
+    ax_prb_phase.set_title("Probe Phase")
+    ax_prb_amp.set_title("Probe Amplitude")
+
+    placeholder = np.zeros((64, 64)) * np.nan
+    ptycho_axes_info = [
+        (ax_obj_phase,  "twilight", "object_phase"),
+        (ax_obj_amp,    "gray",     "object_amp"),
+        (ax_prb_phase,  "twilight", "probe_phase"),
+        (ax_prb_amp,    "gray",     "probe_amp"),
+    ]
+    ptycho_ims = {}
+    for ax, cmap, key in ptycho_axes_info:
+        im = ax.imshow(placeholder, cmap=cmap, interpolation='nearest', aspect='equal')
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ptycho_ims[key] = im
+
+    return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims
+
+
+# ===================== Combined animation =====================
+
+_stxm_n_prev = 0
+
+
+def animate_combined(i):
+    global stxm_dict, ptycho_dict, _stxm_n_prev
+    global ax_stxm_outer, ax_stxm_inner, ptycho_ims, reset_limits, plot_batch
+
+    # ---- STXM panels ----
+    fields = ("inner", "outer", "positions", "position_ids", "intensity_ids")
+    if all(stxm_dict[f] is not None for f in fields):
+        n = stxm_dict["total_n"]
+        if n > 0 and n != _stxm_n_prev:
+            n_plot = n if plot_batch is None else min(n, plot_batch)
+            _stxm_n_prev = n
+
+            x, y, z, th = stxm_dict["positions"][:n_plot].T
+            s_inner = stxm_dict["inner"][:n_plot]
+            s_outer = stxm_dict["outer"][:n_plot]
+
+            th_rad = th * np.pi / 180
+            x_lab = (x * np.cos(th_rad) + z * np.sin(th_rad)) * -1
+            y_lab = y * -1
+
+            for c in ax_stxm_outer.collections:
+                c.remove()
+            for c in ax_stxm_inner.collections:
+                c.remove()
+
+            update_tricontour(ax_stxm_outer, x_lab, y_lab, s_outer, reset_limits)
+            update_tricontour(ax_stxm_inner, x_lab, y_lab, s_inner, reset_limits)
+
+            print(f"STXM frame {i}: {n_plot} points")
+
+    # ---- Ptycho panels ----
+    for key, im in ptycho_ims.items():
+        arr = ptycho_dict[key]
+        if arr is not None and arr.ndim >= 2:
+            im.set_data(arr)
+            im.set_clim(vmin=np.nanpercentile(arr, 2),
+                        vmax=np.nanpercentile(arr, 98))
+
+
+# ===================== Main =====================
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--backend", type=str, default="zmq", 
-                       choices=["nats", "zmq"],
-                       help="Backend to use for receiving data")
+    parser.add_argument("--backend", type=str, default="zmq",
+                        choices=["nats", "zmq"],
+                        help="Backend type")
     parser.add_argument("--endpoint", type=str, default=None,
-                       help="Backend endpoint (default: 'localhost:6000' for NATS, 'tcp://localhost:9999' for ZMQ)")
-    parser.add_argument("--plot_batch", type=int, default=None, help="Plot batch size")
-    parser.add_argument("--show_diagnostics", type=bool, default=False, help="Show diagnostics")
-    parser.add_argument("--xmin", type=float, default=None, help="xmin")
-    parser.add_argument("--xmax", type=float, default=None, help="xmax")
-    parser.add_argument("--ymin", type=float, default=None, help="ymin")
-    parser.add_argument("--ymax", type=float, default=None, help="ymax")
+                        help="Backend endpoint (default: 'localhost:6000' for NATS, "
+                             "'tcp://localhost:6020' for ZMQ)")
+    parser.add_argument("--plot_batch", type=int, default=None,
+                        help="STXM plot batch size")
+    parser.add_argument("--xmin", type=float, default=None)
+    parser.add_argument("--xmax", type=float, default=None)
+    parser.add_argument("--ymin", type=float, default=None)
+    parser.add_argument("--ymax", type=float, default=None)
     args = parser.parse_args()
 
-    show_diagnostics = args.show_diagnostics
     plot_batch = args.plot_batch
-    
-    # Determine endpoint based on backend if not specified
+
     if args.endpoint is None:
-        if args.backend == "nats":
-            endpoint = "localhost:6000"
-        else:  # zmq
-            endpoint = "tcp://localhost:6010"
+        endpoint = "localhost:6000" if args.backend == "nats" else "tcp://localhost:6020"
     else:
         endpoint = args.endpoint
-    
-    print(f"Using {args.backend} backend at {endpoint}")
-    backend = get_subscribe_backend(backend=args.backend, endpoint=endpoint)
 
-    t = threading.Thread(target=receive_data)
-    t.start()
-    
-    if show_diagnostics:    
-        fig, ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, im1, im2, line1, line2, line3, line4, line5, line6 = generate_figure(show_diagnostics)
-    else:
-        fig, ax1, ax2, im1, im2 = generate_figure(show_diagnostics)
-        
-    if args.xmin is not None and args.xmax is not None and args.ymin is not None and args.ymax is not None:
-        ax1.set_xlim(-args.xmax, -args.xmin)
-        ax2.set_xlim(-args.xmax, -args.xmin)
-        ax1.set_ylim(-args.ymax, -args.ymin)
-        ax2.set_ylim(-args.ymax, -args.ymin)
+    print(f"Using {args.backend} backend at {endpoint}")
+
+    all_subjects = STXM_SUBJECTS + PTYCHO_SUBJECTS
+    sub_backend = get_subscribe_backend(args.backend, endpoint, all_subjects)
+
+    threading.Thread(target=receive_stxm_data, args=(sub_backend,), daemon=True).start()
+    threading.Thread(target=receive_ptycho_data, args=(sub_backend,), daemon=True).start()
+
+    fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure()
+
+    if all(v is not None for v in (args.xmin, args.xmax, args.ymin, args.ymax)):
+        ax_stxm_outer.set_xlim(-args.xmax, -args.xmin)
+        ax_stxm_inner.set_xlim(-args.xmax, -args.xmin)
+        ax_stxm_outer.set_ylim(-args.ymax, -args.ymin)
+        ax_stxm_inner.set_ylim(-args.ymax, -args.ymin)
         reset_limits = False
     else:
         reset_limits = True
 
-    ani = animation.FuncAnimation(fig, animate, interval=100, blit=True, cache_frame_data=False)
+    ani = animation.FuncAnimation(
+        fig, animate_combined, interval=200, cache_frame_data=False,
+    )
     plt.show()
-
-# print(nats_inst.rxq)
-
-
