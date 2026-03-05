@@ -174,10 +174,6 @@ class StxmApp(Application):
             ptycho_publish = PtychoPublishOp(
                 self,
                 publish_backend=publish_backend,
-                tensor2subject={
-                    "object": "ptycho_object",
-                    "probe": "ptycho_probe",
-                },
                 name="ptycho_publish",
             )
 
