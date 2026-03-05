@@ -30,19 +30,18 @@ sink_and_publish_op:
   # publish_folder: "./processed"
   temp_folder: "./temp"
   backend: "zmq"  # Options: "nats" or "zmq"
-  backend_endpoint: "tcp://localhost:6010"  # ZMQ endpoint or NATS host:port
+  backend_endpoint: "tcp://localhost:6020"  # ZMQ endpoint or NATS host:port
   # backend: "nats"  # Options: "nats" or "zmq"
   # backend_endpoint: "localhost:6000"  # ZMQ endpoint or NATS host:port
 
 ptychography:
-  enabled: false  # toggle on when ready to test
-  ptyrex_config: "test_data/config.json"
+  enabled: true  # toggle on when ready to test
+  ptyrex_config: "/workdir/test_data/config.json"
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
-  no_frames: 256
-  batch_size: 64
-  total_iterations: 20
+  no_frames: 1024
+  total_iterations: 30
   post_stream_iterations: 5
-  housekeeping_interval: 5
-  publish_interval: 5
-  R: [175.79276, 202.33006]
+  housekeeping_interval: 1
+  publish_interval: 1
+  R: [740.93, 740.99]  # scan range in pixels; must match actual scan extent

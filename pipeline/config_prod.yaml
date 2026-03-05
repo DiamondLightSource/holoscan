@@ -39,10 +39,9 @@ ptychography:
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
   no_frames: 1024
-  batch_size: 128
   total_iterations: 100
   post_stream_iterations: 10
   housekeeping_interval: 10
   publish_interval: 10
-  R: [175.79276, 202.33006]
+  R: [740.93, 740.99]  # scan range in pixels; must match actual scan extent
 
