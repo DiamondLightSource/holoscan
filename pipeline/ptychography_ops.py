@@ -58,8 +58,8 @@ class PtychoAccumulatorOp(Operator):
         if data is None:
             return
 
-        images = data["images"]       # (N, H, W) numpy on host
-        positions = data["positions"]  # (N, 4) [x, y, z, theta]
+        images = np.asarray(data["images"])       # (N, H, W) numpy on host
+        positions = np.asarray(data["positions"])  # (N, 4) [x, y, z, theta]
         batch_size = images.shape[0]
 
         filled = self.ptycho_state["filled_until"]
@@ -85,9 +85,46 @@ class PtychoAccumulatorOp(Operator):
         self.ptycho_state["positions_full"][0, 0, filled:new_end] = cp.asarray(pos_y)
         self.ptycho_state["positions_full"][0, 1, filled:new_end] = cp.asarray(pos_x)
 
+        # Diagnostics on first batch
+        if filled == 0:
+            pty_model = self.ptycho_state["pty_model"]
+            obj_h = int(pty_model.obj.sz_glo[-2])
+            obj_w = int(pty_model.obj.sz_glo[-1])
+            half_h = int(pty_model.probe.array_states.shape[-2]) // 2
+            half_w = int(pty_model.probe.array_states.shape[-1]) // 2
+            self.logger.info(
+                "Object array: %d x %d, probe: %d x %d (half: %d x %d)",
+                obj_h, obj_w, half_h * 2, half_w * 2, half_h, half_w,
+            )
+            self.logger.info(
+                "First batch positions: py=[%.2f, %.2f], px=[%.2f, %.2f]",
+                pos_y.min(), pos_y.max(), pos_x.min(), pos_x.max(),
+            )
+
         # Atomically update fill counter
         with self.lock:
             self.ptycho_state["filled_until"] = new_end
+
+        # Summary when buffer is full
+        if new_end >= self.ptycho_state["no_frames"]:
+            all_py = cp.asnumpy(self.ptycho_state["positions_full"][0, 0, :])
+            all_px = cp.asnumpy(self.ptycho_state["positions_full"][0, 1, :])
+            pty_model = self.ptycho_state["pty_model"]
+            obj_h = int(pty_model.obj.sz_glo[-2])
+            obj_w = int(pty_model.obj.sz_glo[-1])
+            half_h = int(pty_model.probe.array_states.shape[-2]) // 2
+            half_w = int(pty_model.probe.array_states.shape[-1]) // 2
+            oob = (
+                (all_py < half_h) | (all_py + half_h > obj_h)
+                | (all_px < half_w) | (all_px + half_w > obj_w)
+            )
+            self.logger.info(
+                "All %d frames accumulated. "
+                "py=[%.1f,%.1f], px=[%.1f,%.1f], "
+                "out-of-bounds: %d/%d",
+                new_end, all_py.min(), all_py.max(),
+                all_px.min(), all_px.max(), oob.sum(), len(all_py),
+            )
 
     # ------------------------------------------------------------------
 
@@ -143,22 +180,19 @@ class PtychoAccumulatorOp(Operator):
         py *= pty_model.scan.scale[0]
         px *= pty_model.scan.scale[1]
 
-        # Relative positions
-        px -= cp.mean(px)
-        py -= cp.mean(py)
+        # Relative positions — use precomputed global scan center
+        py -= self.ptycho_state["scan_center_py"]
+        px -= self.ptycho_state["scan_center_px"]
 
         # Convert to pixel coordinates
         dx = pty_params.dx[0][0]
         px = px / dx
         py = py / dx
 
-        # Centre in object
-        py += pty_model.obj.sz_glo[0] / 2
-        px += pty_model.obj.sz_glo[1] / 2
-
-        # Offset so min is at margin (256 pixels)
-        py -= cp.min(py) - 256
-        px -= cp.min(px) - 256
+        # Centre in object — use spatial dims, not batch dims
+        # (PtyREX's sz_glo is the full 7D shape; spatial dims are at [-2],[-1])
+        py += pty_model.obj.sz_glo[-2] / 2
+        px += pty_model.obj.sz_glo[-1] / 2
 
         return cp.asnumpy(py), cp.asnumpy(px)
 
@@ -253,9 +287,54 @@ class PtychoReconstructionOp(Operator):
             cp.newaxis, :, :, :
         ]
 
-        pty_params.frame_IDs = np.arange(0, n_filled, dtype=np.int32)
-        frame_ids_cp = cp.arange(0, n_filled, dtype=cp.int32)
-        pty_params.current_iteration = self.current_iteration
+        pty_params.current_iteration = min(
+            self.current_iteration, self.total_iterations - 1
+        )
+
+        # Filter to positions where the probe fits within the object.
+        # PtyREX uses centre convention: both paste_e_pp and cut2 subtract
+        # probe_size/2 from the position to get the top-left corner.
+        obj_h = int(pty_model.obj.sz_glo[-2])
+        obj_w = int(pty_model.obj.sz_glo[-1])
+        half_h = int(pty_model.probe.array_states.shape[-2]) // 2
+        half_w = int(pty_model.probe.array_states.shape[-1]) // 2
+
+        pos_y = pty_model.scan.positions[0, 0, :]
+        pos_x = pty_model.scan.positions[0, 1, :]
+        valid_mask = (
+            (pos_y >= half_h) & (pos_y + half_h <= obj_h)
+            & (pos_x >= half_w) & (pos_x + half_w <= obj_w)
+        )
+        valid_ids = cp.where(valid_mask)[0].astype(cp.int32)
+        n_oob = n_filled - int(valid_ids.size)
+
+        if self.current_iteration == 0:
+            py_min, py_max = float(cp.min(pos_y)), float(cp.max(pos_y))
+            px_min, px_max = float(cp.min(pos_x)), float(cp.max(pos_x))
+            self.logger.info(
+                "Iter 0: %d/%d valid (object %dx%d, half-probe %dx%d), "
+                "py=[%.1f,%.1f], px=[%.1f,%.1f]",
+                valid_ids.size, n_filled, obj_h, obj_w, half_h, half_w,
+                py_min, py_max, px_min, px_max,
+            )
+
+        if n_oob > 0:
+            self.logger.warning(
+                "Iter %d: %d/%d positions OUT OF BOUNDS — check R config",
+                self.current_iteration, n_oob, n_filled,
+            )
+
+        if valid_ids.size == 0:
+            self.logger.error(
+                "No valid positions (0/%d in object bounds), skipping iteration",
+                n_filled,
+            )
+            pty_model.scan.positions = self.ptycho_state["positions_full"]
+            pty_model.scan.tilts = self.ptycho_state["tilts_full"]
+            return
+
+        pty_params.frame_IDs = cp.asnumpy(valid_ids)
+        frame_ids_cp = valid_ids
 
         # Run one PIE iteration
         recon_data = ptyrex.reconstruct.core.recon_processing.reconstruction_data(
@@ -283,11 +362,13 @@ class PtychoReconstructionOp(Operator):
 
         # Publish (every M iterations or on last)
         if self.current_iteration % self.publish_interval == 0 or is_last:
+            obj_2d = np.squeeze(cp.asnumpy(pty_model.obj.array_global))
+            probe_2d = np.squeeze(cp.asnumpy(pty_model.probe.array_states))
             out = {
-                "object": cp.asnumpy(pty_model.obj.array_global),
-                "probe": cp.asnumpy(
-                    pty_model.probe.array_states[..., 0, 0]
-                ),
+                "object_phase": np.angle(obj_2d).astype(np.float32),
+                "object_amp": np.abs(obj_2d).astype(np.float32),
+                "probe_phase": np.angle(probe_2d).astype(np.float32),
+                "probe_amp": np.abs(probe_2d).astype(np.float32),
                 "iteration": self.current_iteration,
             }
             op_output.emit(out, "output")
@@ -335,8 +416,10 @@ class PtychoPublishOp(Operator):
     ):
         self.backend = publish_backend
         self.tensor2subject = tensor2subject or {
-            "object": "ptycho_object",
-            "probe": "ptycho_probe",
+            "object_phase": "ptycho_object_phase",
+            "object_amp": "ptycho_object_amp",
+            "probe_phase": "ptycho_probe_phase",
+            "probe_amp": "ptycho_probe_amp",
         }
         self.logger = logging.getLogger(
             kwargs.get("name", "PtychoPublishOp")
