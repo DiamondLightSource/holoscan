@@ -17,22 +17,31 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+class _DummyComm:
+    """No-op MPI communicator stub (all calls are guarded by nprocs > 1)."""
+    rank = 0
+    size = 1
+
+    @staticmethod
+    def Barrier():
+        pass
+
+    @staticmethod
+    def Bcast(data, root=0):
+        return data
+
+    @staticmethod
+    def Allreduce(*args, **kwargs):
+        pass
+
+
 class DummyJSplitter:
     """Stub for PtyREX's JSplit when running without MPI."""
     rank = 0
     nprocs = 1
-
-    class global_comm:
-        rank = 0
-        size = 1
-
-        @staticmethod
-        def Barrier():
-            pass
-
-        @staticmethod
-        def Bcast(data, root=0):
-            return data
+    probe_av = 0
+    comm = _DummyComm()
+    global_comm = _DummyComm()
 
 
 class DummyPtyPlot:
@@ -43,6 +52,62 @@ class DummyPtyPlot:
 
     def update(self, *args, **kwargs):
         pass
+
+
+def _compute_global_scan_center(scan_path, pty_model, projection_id=0):
+    """Precompute the global scan center from all positions in the HDF5.
+
+    Applies the same coordinate transform chain as
+    ``PtychoAccumulatorOp._transform_positions`` (virtual-plane projection,
+    orientation, unit conversion, scaling) to ALL positions in the dataset,
+    then returns the mean values.  These serve as fixed centering offsets so
+    that every streaming batch is referenced to the same global centre rather
+    than being centred per-batch.
+
+    The streaming variant of PtyREX's position handling
+    (``calculate_positions_test``) does NOT apply a ``min - 256`` margin
+    offset, so we omit it here as well.
+
+    Returns
+    -------
+    center_py, center_px : float
+        Global mean of the transformed y and x positions (in metres, scaled).
+    """
+    import h5py
+
+    with h5py.File(scan_path, "r") as f:
+        scan_data = np.array(f["/data/scan"][projection_id, :, :])  # (N, 4)
+
+    pos_t = scan_data[:, 0]
+    pos_x = scan_data[:, 1]
+    pos_y = scan_data[:, 2]
+    pos_z = scan_data[:, 3]
+
+    theta = float(np.mean(pos_t))
+    angle_rad = np.pi * theta / 180.0
+
+    px = pos_x * np.cos(angle_rad) + pos_z * np.sin(angle_rad)
+    py = pos_y
+
+    px = -px
+    py = -py
+
+    orientation = pty_model.scan.orientation
+    if orientation == "01":
+        py = -py
+    elif orientation == "10":
+        px = -px
+    elif orientation == "11":
+        px = -px
+        py = -py
+
+    px *= -1e-6
+    py *= -1e-6
+
+    py *= pty_model.scan.scale[0]
+    px *= pty_model.scan.scale[1]
+
+    return float(np.mean(py)), float(np.mean(px))
 
 
 def init_ptycho_state(ptycho_cfg: dict) -> dict:
@@ -59,7 +124,18 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         Shared state containing PtyREX model objects and pre-allocated
         GPU buffers.
     """
+    import importlib.util, os, sys
     import cupy as cp
+
+    # PtyREX's save.py uses `import _version` (absolute), which lives at the
+    # PtyREX repo root.  We must add that root to sys.path *before* any ptyrex
+    # import, because ptyrex.__init__ triggers the chain that needs _version.
+    _spec = importlib.util.find_spec("ptyrex")
+    if _spec and _spec.origin:
+        _ptyrex_root = os.path.dirname(os.path.dirname(_spec.origin))
+        if _ptyrex_root not in sys.path:
+            sys.path.insert(0, _ptyrex_root)
+
     from ptyrex.core.io import json_read
     from ptyrex.reconstruct.core import setup
     from ptyrex.reconstruct.iterator.process_pty_model import generate_grow_scan_params
@@ -130,13 +206,21 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
     pty_model.scan.original = cp.zeros_like(positions_full)
     pty_model.scan.previous = cp.zeros_like(positions_full)
 
+    # 7. Precompute global scan center from full HDF5 positions
+    scan_path = pty_model.scan.path
+    center_py, center_px = _compute_global_scan_center(scan_path, pty_model)
+    logger.info(
+        "Global scan center: py=%.6e, px=%.6e (metres, scaled)",
+        center_py, center_px,
+    )
+
     logger.info(
         "ptycho_state initialized: %d frames, image size %dx%d, "
         "%d total iterations",
         no_frames, H, W, pty_params.total_iterations,
     )
 
-    # 7. Assemble ptycho_state
+    # 8. Assemble ptycho_state
     return {
         "pty_data": pty_data,
         "pty_model": pty_model,
@@ -146,5 +230,7 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         "tilts_full": tilts_full,
         "filled_until": 0,
         "no_frames": no_frames,
+        "scan_center_py": center_py,
+        "scan_center_px": center_px,
         "lock": threading.Lock(),
     }
