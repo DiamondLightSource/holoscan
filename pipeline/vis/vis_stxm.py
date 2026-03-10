@@ -54,10 +54,20 @@ class ZmqSubscribeBackend(SubscribeBackend):
         while self.running:
             try:
                 if self.socket.poll(100):
-                    topic, data = self.socket.recv_multipart()
-                    topic_str = topic.decode('utf-8')
-                    if topic_str in self.queues:
-                        self.queues[topic_str].put(data, block=False)
+                    parts = self.socket.recv_multipart()
+                    topic_str = parts[0].decode('utf-8')
+                    if topic_str not in self.queues:
+                        continue
+                    if len(parts) == 3:
+                        header = json.loads(parts[1].decode('utf-8'))
+                        arr = np.frombuffer(
+                            parts[2], dtype=header['dtype']
+                        ).reshape(header['shape']).copy()
+                        self.queues[topic_str].put(arr, block=False)
+                    elif len(parts) == 2:
+                        arr = np.array(json.loads(parts[1].decode('utf-8')))
+                        self.queues[topic_str].put(arr, block=False)
+                    print(f"  [ZMQ] {topic_str}: shape={arr.shape} dtype={arr.dtype}")
             except Exception as e:
                 print(f"Error in ZMQ receive loop: {e}")
                 time.sleep(0.1)
@@ -115,8 +125,7 @@ def receive_stxm_data(sub_backend):
             ("intensity_ids", "stxm_intensity_ids"),
         ):
             try:
-                raw = sub_backend.get_queue(subject).get(block=False)
-                arr = np.array(json.loads(raw.decode()))
+                arr = sub_backend.get_queue(subject).get(block=False)
                 if stxm_dict[key] is None:
                     stxm_dict[key] = arr.copy()
                 else:
@@ -160,8 +169,7 @@ def receive_ptycho_data(sub_backend):
             ("probe_amp", "ptycho_probe_amp"),
         ):
             try:
-                raw = sub_backend.get_queue(subject).get(block=False)
-                arr = np.squeeze(np.array(json.loads(raw.decode())))
+                arr = np.squeeze(sub_backend.get_queue(subject).get(block=False))
                 if arr.ndim < 2:
                     print(f"Ptycho {key}: skipping bad shape {arr.shape}")
                     continue
