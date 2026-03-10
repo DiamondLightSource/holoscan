@@ -17,6 +17,7 @@ from holoscan.core import Operator, OperatorSpec, IOSpec, ConditionType
 
 import ptyrex.reconstruct.core.recon_processing
 from ptyrex.reconstruct.core import setup
+from ptyrex.core.toolbox import setPower
 from ptyrex.reconstruct.iterator.PIE_cupy import (
     update_subset,
     combine_subsets_stream,
@@ -74,6 +75,38 @@ class PtychoAccumulatorOp(Operator):
             pty_data.crop_top : pty_data.crop_bottom,
             pty_data.crop_left : pty_data.crop_right,
         ]
+
+        # Detector preprocessing (matches PtyREX post_process / post_process_stream)
+        pty_model = self.ptycho_state["pty_model"]
+        det = pty_model.detector
+        threshold = det.threshold
+        if threshold > 0:
+            images_gpu[images_gpu <= threshold] = threshold
+            images_gpu = images_gpu - threshold
+
+        orientation = det.orientation
+        if orientation == "01":
+            images_gpu = images_gpu[:, :, ::-1]
+        elif orientation == "10":
+            images_gpu = images_gpu[:, ::-1, :]
+        elif orientation == "11":
+            images_gpu = images_gpu[:, ::-1, ::-1]
+
+        if det.rot != 0:
+            images_gpu = cp.rot90(images_gpu, det.rot, axes=(-2, -1))
+
+        if pty_model.geometry.modality != "near-field":
+            images_gpu = cp.fft.fftshift(images_gpu, axes=(-2, -1))
+
+        if filled == 0:
+            self.logger.info(
+                "Preprocessing: threshold=%s, orientation=%r, rot=%s, "
+                "modality=%r, fftshift=%s, batch_sum_before=%.1f",
+                threshold, orientation, det.rot,
+                pty_model.geometry.modality,
+                pty_model.geometry.modality != "near-field",
+                float(cp.sum(images_gpu)),
+            )
 
         # Position transform: reorder (x,y,z,theta) -> (t,x,y,z)
         positions_txyz = positions[:, [3, 0, 1, 2]]
@@ -286,6 +319,21 @@ class PtychoReconstructionOp(Operator):
         pty_data.raw_expanded = self.ptycho_state["raw_gpu"][:n_filled][
             cp.newaxis, :, :, :
         ]
+
+        # Flux normalization — compute once on first iteration
+        if self.current_iteration == 0 and pty_model.source.flux < 0:
+            raw_cpu = cp.asnumpy(self.ptycho_state["raw_gpu"][:n_filled])
+            dp = pty_data.dp
+            pty_model.source.flux = float(np.sum(
+                np.sum(raw_cpu, 0)[dp == 1]
+            ) / raw_cpu.shape[0])
+            self.logger.info("Computed flux = %.2f from %d frames", pty_model.source.flux, n_filled)
+            for trial_idx in range(pty_model.scan.tris_n):
+                pty_model.probe.array_states[:, :, :, :, trial_idx, :, :] = setPower(
+                    pty_model.probe.array_states[:, :, :, :, trial_idx, :, :],
+                    pty_model.source.flux,
+                )
+            self.logger.info("Probe power normalized to flux")
 
         pty_params.current_iteration = min(
             self.current_iteration, self.total_iterations - 1
