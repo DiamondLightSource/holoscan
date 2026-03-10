@@ -53,12 +53,10 @@ class ZmqBackend(PublishBackend):
         time.sleep(0.1)
     
     def publish(self, subject: str, data: np.ndarray):
-        """Publish data to ZMQ topic."""
-        # ZMQ multipart message: [topic, json_data]
+        """Publish data to ZMQ topic as binary numpy."""
         topic = subject.encode('utf-8')
-        # Convert numpy array to JSON
-        data_json = json.dumps(data.tolist()).encode('utf-8')
-        self.socket.send_multipart([topic, data_json])
+        header = json.dumps({"shape": list(data.shape), "dtype": str(data.dtype)}).encode('utf-8')
+        self.socket.send_multipart([topic, header, data.tobytes()])
     
     def close(self):
         """Close ZMQ socket."""
