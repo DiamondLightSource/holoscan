@@ -44,4 +44,5 @@ ptychography:
   post_stream_iterations: 5
   housekeeping_interval: 1
   publish_interval: 1
+  scan_range: [[-0.0037975, 0.0035316], [-0.0037504, 0.0035787]]  # [[x1,y1],[x2,y2]] motor coords
   R: [740.93, 740.99]  # scan range in pixels; must match actual scan extent

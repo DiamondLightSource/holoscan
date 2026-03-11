@@ -54,62 +54,6 @@ class DummyPtyPlot:
         pass
 
 
-def _compute_global_scan_center(scan_path, pty_model, projection_id=0):
-    """Precompute the global scan center from all positions in the HDF5.
-
-    Applies the same coordinate transform chain as
-    ``PtychoAccumulatorOp._transform_positions`` (virtual-plane projection,
-    orientation, unit conversion, scaling) to ALL positions in the dataset,
-    then returns the mean values.  These serve as fixed centering offsets so
-    that every streaming batch is referenced to the same global centre rather
-    than being centred per-batch.
-
-    The streaming variant of PtyREX's position handling
-    (``calculate_positions_test``) does NOT apply a ``min - 256`` margin
-    offset, so we omit it here as well.
-
-    Returns
-    -------
-    center_py, center_px : float
-        Global mean of the transformed y and x positions (in metres, scaled).
-    """
-    import h5py
-
-    with h5py.File(scan_path, "r") as f:
-        scan_data = np.array(f["/data/scan"][projection_id, :, :])  # (N, 4)
-
-    pos_t = scan_data[:, 0]
-    pos_x = scan_data[:, 1]
-    pos_y = scan_data[:, 2]
-    pos_z = scan_data[:, 3]
-
-    theta = float(np.mean(pos_t))
-    angle_rad = np.pi * theta / 180.0
-
-    px = pos_x * np.cos(angle_rad) + pos_z * np.sin(angle_rad)
-    py = pos_y
-
-    px = -px
-    py = -py
-
-    orientation = pty_model.scan.orientation
-    if orientation == "01":
-        py = -py
-    elif orientation == "10":
-        px = -px
-    elif orientation == "11":
-        px = -px
-        py = -py
-
-    px *= -1e-6
-    py *= -1e-6
-
-    py *= pty_model.scan.scale[0]
-    px *= pty_model.scan.scale[1]
-
-    return float(np.mean(py)), float(np.mean(px))
-
-
 def init_ptycho_state(ptycho_cfg: dict) -> dict:
     """Build ptycho_state from PtyREX JSON config + pipeline YAML overrides.
 
@@ -206,12 +150,13 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
     pty_model.scan.original = cp.zeros_like(positions_full)
     pty_model.scan.previous = cp.zeros_like(positions_full)
 
-    # 7. Precompute global scan center from full HDF5 positions
-    scan_path = pty_model.scan.path
-    center_py, center_px = _compute_global_scan_center(scan_path, pty_model)
+    # 7. Scan range → motor-space center (transform applied at runtime)
+    scan_range = ptycho_cfg["scan_range"]
+    motor_center_x = (scan_range[0][0] + scan_range[1][0]) / 2.0
+    motor_center_y = (scan_range[0][1] + scan_range[1][1]) / 2.0
     logger.info(
-        "Global scan center: py=%.6e, px=%.6e (metres, scaled)",
-        center_py, center_px,
+        "Scan range motor coords: (%s) → (%s), center: x=%.2f, y=%.2f µm",
+        scan_range[0], scan_range[1], motor_center_x, motor_center_y,
     )
 
     logger.info(
@@ -230,7 +175,9 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         "tilts_full": tilts_full,
         "filled_until": 0,
         "no_frames": no_frames,
-        "scan_center_py": center_py,
-        "scan_center_px": center_px,
+        "motor_center_x": motor_center_x,
+        "motor_center_y": motor_center_y,
+        "scan_center_py": None,
+        "scan_center_px": None,
         "lock": threading.Lock(),
     }

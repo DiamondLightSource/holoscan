@@ -7,7 +7,7 @@ scheduler:
 image_src:
   zmq_endpoint: "tcp://172.23.82.48:31001"
   receive_timeout_ms: 100
-  batch_size: 1000
+  batch_size: 64
 
 decompress_op:
   data_size: [514, 1030]
@@ -35,13 +35,14 @@ sink_and_publish_op:
 
 ptychography:
   enabled: true
-  ptyrex_config: "/path/to/prod_config.json"
+  ptyrex_config: "/workdir/test_data/pty_config_15keV_streamTest_6mm.json"
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
   no_frames: 1024
-  total_iterations: 100
-  post_stream_iterations: 10
-  housekeeping_interval: 10
-  publish_interval: 10
-  R: [740.93, 740.99]  # scan range in pixels; must match actual scan extent
+  total_iterations: 20
+  post_stream_iterations: 1
+  housekeeping_interval: 2
+  publish_interval: 1
+  scan_range: [[0.0, 0.0], [0.0, 0.0]]  # [[x1, y1], [x2, y2]] motor coords (µm)
+  R: [351.0, 364.0]  # scan range in pixels; must match actual scan extent
 

@@ -213,7 +213,32 @@ class PtychoAccumulatorOp(Operator):
         py *= pty_model.scan.scale[0]
         px *= pty_model.scan.scale[1]
 
-        # Relative positions — use precomputed global scan center
+        # Compute transformed scan center once from motor-space center
+        if self.ptycho_state["scan_center_py"] is None:
+            cx = self.ptycho_state["motor_center_x"]
+            cy = self.ptycho_state["motor_center_y"]
+            cpx = cx * np.cos(angle_rad)  # z≈0 for center
+            cpy = cy
+            cpx = -cpx
+            cpy = -cpy
+            if orientation == "01":
+                cpy = -cpy
+            elif orientation == "10":
+                cpx = -cpx
+            elif orientation == "11":
+                cpx = -cpx
+                cpy = -cpy
+            cpx *= -1e-6
+            cpy *= -1e-6
+            cpy *= pty_model.scan.scale[0]
+            cpx *= pty_model.scan.scale[1]
+            self.ptycho_state["scan_center_py"] = cpy
+            self.ptycho_state["scan_center_px"] = cpx
+            self.logger.info(
+                "Scan center (transformed): py=%.6e, px=%.6e (theta=%.2f°)",
+                cpy, cpx, theta,
+            )
+
         py -= self.ptycho_state["scan_center_py"]
         px -= self.ptycho_state["scan_center_px"]
 
