@@ -20,6 +20,7 @@ from dectris.compression import decompress
 from holoscan.core import Operator, OperatorSpec, IOSpec, ConditionType
 from holoscan.conditions import PeriodicCondition
 
+logging.basicConfig(level=logging.INFO)
 
 # Tag decoders for CBOR message parsing
 TAG_DECODERS = {
