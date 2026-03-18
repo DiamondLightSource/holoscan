@@ -162,15 +162,17 @@ class PtychoAccumulatorOp(Operator):
     # ------------------------------------------------------------------
 
     def _transform_positions(self, positions_txyz):
-        """Position math from stream.calculate_positions without side effects.
+        """Position math matching PtyREX stream.calculate_positions.
 
-        Computes pixel-space (pos_y, pos_x) from raw motor positions
-        without mutating any ``pty_model`` attributes.
+        Computes pixel-space (pos_y, pos_x) from raw motor positions.
+        On the first call, the mean of the batch is captured as the scan
+        center so that positions are automatically centred in the object
+        without requiring a pre-computed scan_range.
 
         Parameters
         ----------
         positions_txyz : ndarray (N, 4)
-            Columns are [theta, x, y, z] in motor units.
+            Columns are [theta, x, y, z] in motor units (microns).
 
         Returns
         -------
@@ -188,12 +190,9 @@ class PtychoAccumulatorOp(Operator):
         theta = cp.mean(pos_t).item()
         angle_rad = np.pi * theta / 180.0
 
-        # Virtual scanning plane projection
+        # Virtual scanning plane projection (matches PtyREX streaming)
         px = pos_x * np.cos(angle_rad) + pos_z * np.sin(angle_rad)
         py = pos_y
-
-        px = -px
-        py = -py
 
         # Orientation correction
         orientation = pty_model.scan.orientation
@@ -205,38 +204,24 @@ class PtychoAccumulatorOp(Operator):
             px = -px
             py = -py
 
-        # Probe positions — unit conversion to metres
-        px *= -1e-6
-        py *= -1e-6
+        # Unit conversion to metres
+        px *= 1e-6
+        py *= 1e-6
 
         # Scale
         py *= pty_model.scan.scale[0]
         px *= pty_model.scan.scale[1]
 
-        # Compute transformed scan center once from motor-space center
+        # Auto-centre: capture scan centre from first batch
         if self.ptycho_state["scan_center_py"] is None:
-            cx = self.ptycho_state["motor_center_x"]
-            cy = self.ptycho_state["motor_center_y"]
-            cpx = cx * np.cos(angle_rad)  # z≈0 for center
-            cpy = cy
-            cpx = -cpx
-            cpy = -cpy
-            if orientation == "01":
-                cpy = -cpy
-            elif orientation == "10":
-                cpx = -cpx
-            elif orientation == "11":
-                cpx = -cpx
-                cpy = -cpy
-            cpx *= -1e-6
-            cpy *= -1e-6
-            cpy *= pty_model.scan.scale[0]
-            cpx *= pty_model.scan.scale[1]
-            self.ptycho_state["scan_center_py"] = cpy
-            self.ptycho_state["scan_center_px"] = cpx
+            self.ptycho_state["scan_center_py"] = float(cp.mean(py))
+            self.ptycho_state["scan_center_px"] = float(cp.mean(px))
             self.logger.info(
-                "Scan center (transformed): py=%.6e, px=%.6e (theta=%.2f°)",
-                cpy, cpx, theta,
+                "Auto-centring scan: center_py=%.6e m, center_px=%.6e m "
+                "(theta=%.2f°)",
+                self.ptycho_state["scan_center_py"],
+                self.ptycho_state["scan_center_px"],
+                theta,
             )
 
         py -= self.ptycho_state["scan_center_py"]
@@ -247,8 +232,7 @@ class PtychoAccumulatorOp(Operator):
         px = px / dx
         py = py / dx
 
-        # Centre in object — use spatial dims, not batch dims
-        # (PtyREX's sz_glo is the full 7D shape; spatial dims are at [-2],[-1])
+        # Centre in object (spatial dims are at [-2], [-1])
         py += pty_model.obj.sz_glo[-2] / 2
         px += pty_model.obj.sz_glo[-1] / 2
 
@@ -360,9 +344,9 @@ class PtychoReconstructionOp(Operator):
                 )
             self.logger.info("Probe power normalized to flux")
 
-        pty_params.current_iteration = min(
+        pty_params.current_iteration = cp.asarray(min(
             self.current_iteration, self.total_iterations - 1
-        )
+        ), dtype=cp.int32)
 
         # Filter to positions where the probe fits within the object.
         # PtyREX uses centre convention: both paste_e_pp and cut2 subtract
