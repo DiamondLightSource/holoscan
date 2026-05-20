@@ -23,6 +23,8 @@ from holoscan.conditions import PeriodicCondition
 # Import operators from modular components
 from data_io import (
     ZmqRxPositionOp,
+    ZmqRxHeaderOp,
+    StartupOp,
     ZmqRxImageBatchOp,
     DecompressBatchOp,
     GatherOp
@@ -58,6 +60,9 @@ class StxmApp(Application):
         self.num_decompress_ops = 4
         self.ptychography_enabled = False
         self.ptycho_state = None
+        self.header_mode = False
+        self.header_received = False
+        self.scan_header = None
         super().__init__(*args, **kwargs)
         self.enable_metadata(True)
 
@@ -70,6 +75,15 @@ class StxmApp(Application):
             gather -> masking_op -> publish
         """
         
+        if self.header_mode:
+            header_src = ZmqRxHeaderOp(self,
+                                name="header_src",
+                                **self.kwargs('header_src'))
+            startup_op = StartupOp(self,
+                                   name="startup_op",
+                                   **self.kwargs('startup_op'))
+            self.add_flow(header_src, startup_op, {("header", "header")})
+
         # ===== Position Data Source =====
         position_src = ZmqRxPositionOp(self,
                             name="position_src",
@@ -228,6 +242,9 @@ def main():
     # Load config to make kwargs available
     app.config(args.config)
 
+    header_cfg = app.kwargs("header_src")
+    app.header_mode = bool(header_cfg)
+
     # Get scheduler parameters from config via kwargs
     scheduler_config = app.kwargs('scheduler')
     num_decompress_ops = scheduler_config.get('num_decompress_ops', 4)
@@ -236,16 +253,20 @@ def main():
     # Set num_decompress_ops - will be used in compose() when run() is called
     app.num_decompress_ops = num_decompress_ops
 
-    # Ptychography setup (before compose)
+    # Ptychography setup
     ptycho_cfg = app.kwargs("ptychography")
     if ptycho_cfg and ptycho_cfg.get("enabled", False):
-        from ptychography_setup import init_ptycho_state
-
-        logger.info("Initialising ptychography state…")
-        app.ptycho_state = init_ptycho_state(ptycho_cfg)
         app.ptychography_enabled = True
         worker_threads = max(worker_threads, 8)
-        logger.info("Ptychography enabled (worker_threads=%d)", worker_threads)
+
+        if app.header_mode:
+            logger.info("Ptychography enabled; runtime scan header will provide scan parameters")
+        else:
+            from ptychography_setup import init_ptycho_state
+
+            logger.info("Initialising ptychography state…")
+            app.ptycho_state = init_ptycho_state(ptycho_cfg)
+            logger.info("Ptychography enabled (worker_threads=%d)", worker_threads)
 
     print(f"Pipeline configuration: {num_decompress_ops} decompression operators, {worker_threads} worker threads")
 
