@@ -20,9 +20,22 @@ from ptyrex.reconstruct.core import setup
 from ptyrex.core.toolbox import setPower
 from ptyrex.reconstruct.iterator.PIE_cupy import (
     update_subset,
+    update_subset_profiling,
     combine_subsets_stream,
     from_device,
     to_device,
+)
+
+import os
+
+# Diagnostic/uncommitted: route the PIE update through the optimized
+# update_subset_profiling variant (eager + optional CUDA-Graph capture) when
+# gated by env. Default (no env set) preserves the shared update_subset path.
+#   PTYREX_PROFILING_UPDATE=1  -> eager optimized path
+#   PTYREX_CAPTURE_GRAPH=1     -> CUDA-Graph capture path (implies profiling)
+_USE_PROFILING_UPDATE = bool(
+    int(os.environ.get("PTYREX_CAPTURE_GRAPH", "0"))
+    or int(os.environ.get("PTYREX_PROFILING_UPDATE", "0"))
 )
 
 
@@ -287,6 +300,9 @@ class PtychoReconstructionOp(Operator):
         if n_filled == 0:
             return
 
+        # ITER_TIMING instrumentation (diagnostic, uncommitted)
+        t_start = time.perf_counter()
+
         no_frames = self.ptycho_state["no_frames"]
 
         # Detect when all data has arrived
@@ -397,8 +413,20 @@ class PtychoReconstructionOp(Operator):
         recon_data = ptyrex.reconstruct.core.recon_processing.reconstruction_data(
             pty_data, pty_model, pty_params
         )
-        update_subset(pty_data, frame_ids_cp, pty_model, pty_params, recon_data)
+        if _USE_PROFILING_UPDATE:
+            if self.current_iteration == 0:
+                self.logger.info(
+                    "PIE update: update_subset_profiling (capture=%s, fpk=%s)",
+                    os.environ.get("PTYREX_CAPTURE_GRAPH", "0"),
+                    int(pty_params.frames_per_kernel),
+                )
+            update_subset_profiling(
+                pty_data, frame_ids_cp, pty_model, pty_params, recon_data
+            )
+        else:
+            update_subset(pty_data, frame_ids_cp, pty_model, pty_params, recon_data)
         combine_subsets_stream(pty_model, pty_params, recon_data)
+        t_pie = time.perf_counter()
 
         # Restore full buffer references for next accumulator writes
         pty_model.scan.positions = self.ptycho_state["positions_full"]
@@ -416,6 +444,7 @@ class PtychoReconstructionOp(Operator):
             from_device(pty_model, pty_params)
             setup.after_iteration(pty_data, pty_model, pty_params, pty_plot=None)
             to_device(pty_model, pty_params, recon_data)
+        t_hk = time.perf_counter()
 
         # Publish (every M iterations or on last)
         if self.current_iteration % self.publish_interval == 0 or is_last:
@@ -429,6 +458,19 @@ class PtychoReconstructionOp(Operator):
                 "iteration": self.current_iteration,
             }
             op_output.emit(out, "output")
+
+        t_end = time.perf_counter()
+        self.logger.info(
+            "ITER_TIMING iter=%d n_filled=%d valid=%d total_ms=%.1f "
+            "pie_ms=%.1f hk_ms=%.1f pub_ms=%.1f",
+            self.current_iteration,
+            n_filled,
+            int(valid_ids.size),
+            (t_end - t_start) * 1e3,
+            (t_pie - t_start) * 1e3,
+            (t_hk - t_pie) * 1e3,
+            (t_end - t_hk) * 1e3,
+        )
 
         self.logger.debug(
             "Iteration %d/%d  (filled=%d/%d)",
