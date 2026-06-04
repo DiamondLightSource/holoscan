@@ -4,6 +4,12 @@ scheduler:
   num_decompress_ops: 3
   worker_threads: 4
 
+header_src:
+  enabled: true
+  zmq_endpoint: "tcp://localhost:5557"
+  receive_timeout_ms: 1000
+  max_wait_s: 30
+  
 image_src:
   # zmq_endpoint: "tcp://20.10.37.101:31001"  # Production endpoint
   zmq_endpoint: "tcp://localhost:5555"        # Local simulator
