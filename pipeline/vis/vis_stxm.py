@@ -89,7 +89,7 @@ STXM_SUBJECTS = (
 
 PTYCHO_SUBJECTS = (
     "ptycho_object_phase", "ptycho_object_amp",
-    "ptycho_probe_phase", "ptycho_probe_amp",
+    "ptycho_probe_phase", "ptycho_probe_amp", "ptycho_flush",
 )
 
 
@@ -176,6 +176,15 @@ def receive_ptycho_data(sub_backend):
                 ptycho_dict[key] = arr
             except Empty:
                 pass
+
+        try:
+            sub_backend.get_queue("ptycho_flush").get(block=False)
+            print("Ptycho flush received")
+            for k in ptycho_dict:
+                ptycho_dict[k] = None
+        except Empty:
+            pass
+
         time.sleep(0.05)
 
 

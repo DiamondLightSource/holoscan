@@ -50,6 +50,9 @@ class ControlOp(Operator):
             if self.publish_backend is not None:
                 import numpy as np
                 self.publish_backend.publish("stxm_flush", np.array([1]))  # Simple signal
+                # Also signal ptycho consumers; harmless when ptycho is disabled
+                # (no subscriber listens on this subject).
+                self.publish_backend.publish("ptycho_flush", np.array([1]))
         
         elif msg == "processing_end":
             # Forward processing_end signal

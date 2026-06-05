@@ -168,6 +168,7 @@ class StxmApp(Application):
                 post_stream_iterations=ptycho_cfg["post_stream_iterations"],
                 housekeeping_interval=ptycho_cfg["housekeeping_interval"],
                 publish_interval=ptycho_cfg["publish_interval"],
+                reset_probe=ptycho_cfg.get("reset_probe", False),
                 name="ptycho_reconstruction",
             )
 
@@ -178,6 +179,7 @@ class StxmApp(Application):
             )
 
             flushable_ops.append(ptycho_accum)
+            flushable_ops.append(ptycho_recon)
 
         control_op = ControlOp(self,
                                flushable_ops=flushable_ops,
