@@ -186,13 +186,6 @@ class ZmqRxPositionOp(Operator):
 
     def compute(self, op_input, op_output, context):
         """Receive and emit position data."""
-        if self.fragment is not None and not getattr(self.fragment, "header_received", False):
-            if not getattr(self, "_waiting_for_header", False):
-                self.logger.info("Waiting for scan header before receiving position data")
-                self._waiting_for_header = True
-            time.sleep(0.01)
-            return
-
         try:
             msg = self.socket.recv_json()
             
@@ -246,150 +239,14 @@ class ZmqRxPositionOp(Operator):
             self.logger.info(f"Could not parse position message: {e}")
 
 
-class ZmqRxHeaderOp(Operator):
-    """
-    Operator for receiving a scan header over ZMQ PUSH/PULL.
-
-    This operator waits for a one-shot JSON header message containing scan
-    parameters and publishes a normalized header dict into the graph.
-    """
-
-    def __init__(self, fragment, *args,
-                 zmq_endpoint: str = None,
-                 receive_timeout_ms: int = 1000,
-                 max_wait_s: float = 30.0,
-                 **kwargs):
-        self.logger = logging.getLogger(kwargs.get("name", "ZmqRxHeaderOp"))
-        logging.basicConfig(level=logging.INFO)
-
-        self.endpoint = zmq_endpoint
-        self.receive_timeout_ms = receive_timeout_ms
-        self.max_wait_s = float(max_wait_s)
-        self._start_time = None
-        self._header_received = False
-
-        context = zmq.Context()
-        self.socket = context.socket(zmq.PULL)
-        self.socket.setsockopt(zmq.RCVTIMEO, receive_timeout_ms)
-
-        try:
-            self.socket.connect(self.endpoint)
-        except zmq.error.ZMQError:
-            self.logger.error("Failed to create socket")
-
-        super().__init__(fragment, *args, **kwargs)
-
-    def setup(self, spec: OperatorSpec):
-        spec.output("header")
-
-    def _normalize_header(self, header: dict) -> dict:
-        required_keys = ["nX", "nY", "dX", "dY"]
-        for key in required_keys:
-            if key not in header:
-                raise ValueError(f"Missing required header key: {key}")
-
-        return {
-            "npoints_h": int(header["nX"]),
-            "npoints_v": int(header["nY"]),
-            "step_size_h": float(header["dX"]),
-            "step_size_v": float(header["dY"]),
-        }
-
-    def receive_header(self):
-        if self._header_received:
-            return None
-
-        if self._start_time is None:
-            self._start_time = time.time()
-
-        try:
-            header = self.socket.recv_json()
-        except zmq.error.Again:
-            elapsed = time.time() - self._start_time
-            if elapsed >= self.max_wait_s:
-                raise RuntimeError(
-                    f"Header not received within {self.max_wait_s:.1f}s"
-                )
-            return None
-
-        normalized = self._normalize_header(header)
-        self._header_received = True
-        return normalized
-
-    def compute(self, op_input, op_output, context):
-        if self._header_received:
-            return
-
-        header = self.receive_header()
-        if header is None:
-            return
-
-        self.logger.info("Received scan header: %s", header)
-        op_output.emit(header, "header")
-
-
-class StartupOp(Operator):
-    """
-    Operator that validates the startup header and enables scan processing.
-
-    This operator receives the normalized header from ZmqRxHeaderOp, stores
-    scan metadata on the fragment, and emits a start signal.
-    """
-
-    def __init__(self, fragment, *args, **kwargs):
-        self.logger = logging.getLogger(kwargs.get("name", "StartupOp"))
-        logging.basicConfig(level=logging.INFO)
-        super().__init__(fragment, *args, **kwargs)
-
-    def setup(self, spec: OperatorSpec):
-        spec.input("header").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=1).condition(ConditionType.NONE)
-        spec.output("start")
-
-    def compute(self, op_input, op_output, context):
-        header = op_input.receive("header")
-        if header is None:
-            return
-
-        if not isinstance(header, dict):
-            raise RuntimeError("Startup header must be a dict")
-
-        required_keys = ["npoints_h", "npoints_v", "step_size_h", "step_size_v"]
-        for key in required_keys:
-            if key not in header:
-                raise RuntimeError(f"Startup header missing required key: {key}")
-
-        normalized = {
-            "npoints_h": int(header["npoints_h"]),
-            "npoints_v": int(header["npoints_v"]),
-            "step_size_h": float(header["step_size_h"]),
-            "step_size_v": float(header["step_size_v"]),
-        }
-
-        self.fragment.header_received = True
-        self.fragment.scan_header = normalized
-        self.logger.info("Scan header validated and startup enabled: %s", normalized)
-
-        if getattr(self.fragment, "ptychography_enabled", False) and getattr(self.fragment, "ptycho_state", None) is None:
-            ptycho_cfg = self.fragment.kwargs("ptychography")
-            if ptycho_cfg:
-                from ptychography_setup import init_ptycho_state
-
-                ptycho_cfg = ptycho_cfg.copy()
-                ptycho_cfg.update(normalized)
-                self.fragment.ptycho_state = init_ptycho_state(ptycho_cfg)
-                self.logger.info("Ptychography state initialized from runtime header")
-
-        op_output.emit("start", "start")
-
-
 class ZmqRxImageBatchOp(Operator):
     """
     Operator for receiving image data over ZMQ PULL socket in batches.
-
+    
     Receives CBOR-encoded compressed images, accumulates them into batches,
     and distributes batches across multiple output ports for parallel processing.
     """
-
+    
     def __init__(self, fragment, *args,
                  zmq_endpoint: str = None,
                  dummy_img_index: bool = False,
@@ -472,13 +329,6 @@ class ZmqRxImageBatchOp(Operator):
     
     def compute(self, op_input, op_output, context):
         """Receive messages and emit batches with metadata."""
-        if self.fragment is not None and not getattr(self.fragment, "header_received", False):
-            if not getattr(self, "_waiting_for_header", False):
-                self.logger.info("Waiting for scan header before receiving image data")
-                self._waiting_for_header = True
-            time.sleep(0.01)
-            return
-
         while True:
             msg = self.receive_msg()
             if msg is None:
