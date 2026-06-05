@@ -1,4 +1,4 @@
 [submodule "PtyREX"]
 	path = PtyREX
-	url = https://github.com/DiamondLightSource/PtyREX.git
+	url = git@github.com:DiamondLightSource/holoscan.git
 	branch = streaming_holoscan
