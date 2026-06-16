@@ -28,14 +28,15 @@ from ptyrex.reconstruct.iterator.PIE_cupy import (
 
 import os
 
-# Diagnostic/uncommitted: route the PIE update through the optimized
-# update_subset_profiling variant (eager + optional CUDA-Graph capture) when
-# gated by env. Default (no env set) preserves the shared update_subset path.
-#   PTYREX_PROFILING_UPDATE=1  -> eager optimized path
-#   PTYREX_CAPTURE_GRAPH=1     -> CUDA-Graph capture path (implies profiling)
-_USE_PROFILING_UPDATE = bool(
-    int(os.environ.get("PTYREX_CAPTURE_GRAPH", "0"))
-    or int(os.environ.get("PTYREX_PROFILING_UPDATE", "0"))
+# Route the PIE update through the optimized CUDA-Graph capture path by
+# default. Opt out with PTYREX_CAPTURE_GRAPH=0; use PTYREX_PROFILING_UPDATE=1
+# with capture disabled to run the eager optimized path.
+_CAPTURE_GRAPH = bool(int(os.environ.get("PTYREX_CAPTURE_GRAPH", "1")))
+if _CAPTURE_GRAPH:
+    os.environ["PTYREX_CAPTURE_GRAPH"] = "1"
+
+_USE_PROFILING_UPDATE = _CAPTURE_GRAPH or bool(
+    int(os.environ.get("PTYREX_PROFILING_UPDATE", "0"))
 )
 
 

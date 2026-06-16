@@ -60,6 +60,29 @@ python test_data_ingest.py --mode both --config config_test.yaml
 python pipeline.py --config config_test.yaml
 ```
 
+### PtyREX CUDA graph capture
+
+On this branch, the Holoscan ptychography path uses PtyREX's optimized
+`update_subset_profiling` CUDA graph capture path by default. No environment
+variable is required for the default path; the pipeline sets
+`PTYREX_CAPTURE_GRAPH=1` before calling into PtyREX.
+
+Useful runtime switches:
+```bash
+# Default behavior: CUDA graph capture enabled
+python pipeline/pipeline.py --config pipeline/config_test.yaml
+
+# Opt out and use the shared standard PtyREX update_subset path
+PTYREX_CAPTURE_GRAPH=0 python pipeline/pipeline.py --config pipeline/config_test.yaml
+
+# Compare against the eager optimized update_subset_profiling path without capture
+PTYREX_CAPTURE_GRAPH=0 PTYREX_PROFILING_UPDATE=1 python pipeline/pipeline.py --config pipeline/config_test.yaml
+```
+
+The capture path currently expects `frames_per_kernel=1`; the pipeline logs the
+selected path on the first reconstruction iteration, for example:
+`PIE update: update_subset_profiling (capture=1, fpk=1)`.
+
 ### PtyREX reconstruction
 
 Using test data mounted at `/workdir/test_data`:
