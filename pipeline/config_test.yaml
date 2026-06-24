@@ -6,9 +6,9 @@ scheduler:
 
 image_src:
   # zmq_endpoint: "tcp://20.10.37.101:31001"  # Production endpoint
-  zmq_endpoint: "tcp://localhost:5555"        # Local simulator
+  zmq_endpoint: "tcp://172.23.82.77:5555"        # Local simulator
   receive_timeout_ms: 1000  # Increased timeout for testing
-  batch_size: 64         # Larger batch for testing
+  batch_size: 100         # Larger batch for testing
 
 decompress_op:
   # data_size: [192, 192]  # Match selun test data (192x192 images)
@@ -16,18 +16,18 @@ decompress_op:
   data_dtype: uint16
 
 position_src:
-  zmq_endpoint: "tcp://localhost:5556"
+  zmq_endpoint: "tcp://172.23.82.77:5556"
   receive_timeout_ms: 1000  # Increased timeout for testing
 
 masking_op:
-  center_x: 512  # Adjusted for 192x192 images (center)
-  center_y: 263  # Adjusted for 192x192 images (center)
-  radius: 54    # Adjusted proportionally
+  center_x: 524  # Adjusted for 192x192 images (center)
+  center_y: 280  # Adjusted for 192x192 images (center)
+  radius: 25    # Adjusted proportionally
 
 sink_and_publish_op:
   publish_tensors: ["positions", "positions_ids", "inner", "outer", "intensity_ids"]
-  publish_folder: null
-  # publish_folder: "./processed"
+  #publish_folder: null
+  publish_folder: "/workdir/test_data" #"./processed"
   temp_folder: "./temp"
   backend: "zmq"  # Options: "nats" or "zmq"
   backend_endpoint: "tcp://*:6020"  # ZMQ endpoint or NATS host:port
@@ -39,11 +39,11 @@ ptychography:
   ptyrex_config: "/workdir/PtyREX/config_409907.json"
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
-  npoints_h: 32        # horizontal scan points
-  npoints_v: 32        # vertical scan points
-  step_size_h: 0.35     # horizontal step size (microns)
-  step_size_v: 0.35     # vertical step size (microns)
-  total_iterations: 30
+  npoints_h: 100        # horizontal scan points
+  npoints_v: 100        # vertical scan points
+  step_size_h: 0.25     # horizontal step size (microns)
+  step_size_v: 0.25     # vertical step size (microns)
+  total_iterations: 6
   post_stream_iterations: 1
   housekeeping_interval: 1
   publish_interval: 1

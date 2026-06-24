@@ -28,5 +28,5 @@ fi
     -v "$(pwd)/PtyREX:/workdir/PtyREX" \
     -v "$(pwd)/test_data:/workdir/test_data" \
     -w /workdir \
-    ptycho-holoscan:stxm \
+    ptycho-holoscan:ptyrex \
     "$@"

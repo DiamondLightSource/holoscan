@@ -217,5 +217,6 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         "no_frames": no_frames,
         "scan_center_py": None,
         "scan_center_px": None,
+        "N": N,
         "lock": threading.Lock(),
     }
