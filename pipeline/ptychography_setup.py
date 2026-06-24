@@ -11,7 +11,7 @@ Builds the shared ptycho_state dict at application launch by:
 import threading
 import logging
 import time
-
+import zmq
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -92,11 +92,36 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
     ID = ptycho_cfg.get("ID", [1, 1, 1])
     pty_data, pty_model, pty_params = json_read.load(ptyrex_config_path, scan_ID, ID)
 
-    # ── 2. Compute streaming parameters from npoints / step_size ───────
-    npoints_h = ptycho_cfg["npoints_h"]
-    npoints_v = ptycho_cfg["npoints_v"]
-    step_size_h = ptycho_cfg["step_size_h"]
-    step_size_v = ptycho_cfg["step_size_v"]
+    if ptycho_cfg["header"] == True: 
+        # -- 2. Get scan points and step sizes from zmq stream --
+        context = zmq.Context()
+        socket_h = context.socket(zmq.PULL)
+        socket_h.setsockopt(zmq.RCVTIMEO, 100000)
+        print('endpoint header: ', ptycho_cfg["endpoint_header"])
+
+        try: 
+            socket_h.connect(ptycho_cfg["endpoint_header"])
+        except zmq.error.ZMQError:
+            logger.error("Failed to create socket")
+
+        try: 
+            header = socket_h.recv_json()
+        except:
+            logger.error("Failed to receive header from socket")
+            raise
+
+        npoints_h = int(header["nX"])
+        npoints_v = int(header["nY"])
+        step_size_h = float(header["dX"])
+        step_size_v = float(header["dY"])
+
+        socket_h.close()
+    else: 
+        # ── 2. Compute streaming parameters from npoints / step_size ───────
+        npoints_h = ptycho_cfg["npoints_h"]
+        npoints_v = ptycho_cfg["npoints_v"]
+        step_size_h = ptycho_cfg["step_size_h"]
+        step_size_v = ptycho_cfg["step_size_v"]
 
     no_frames = npoints_h * npoints_v
     # Scan extent in microns with 20% padding (same formula as PtyREX streaming)
