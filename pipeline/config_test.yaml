@@ -47,3 +47,4 @@ ptychography:
   post_stream_iterations: 1
   housekeeping_interval: 1
   publish_interval: 1
+  reset_probe: false   # false = carry previous scan's probe forward (warm start); true = full probe reset each scan

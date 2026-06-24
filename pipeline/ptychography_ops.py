@@ -66,6 +66,10 @@ class PtychoAccumulatorOp(Operator):
         self.ptycho_state["raw_gpu"][:] = 0
         self.ptycho_state["positions_full"][:] = 0
         self.ptycho_state["tilts_full"][:] = 0
+        # Clear auto-centre so the new scan re-derives its own scan centre
+        # from the first batch rather than reusing the previous scan's.
+        self.ptycho_state["scan_center_py"] = None
+        self.ptycho_state["scan_center_px"] = None
         self.logger.info("Flushed ptychography accumulator buffers")
 
     def compute(self, op_input, op_output, context):
@@ -273,6 +277,7 @@ class PtychoReconstructionOp(Operator):
         post_stream_iterations=10,
         housekeeping_interval=10,
         publish_interval=5,
+        reset_probe=False,
         **kwargs,
     ):
         self.ptycho_state = ptycho_state
@@ -281,10 +286,16 @@ class PtychoReconstructionOp(Operator):
         self.post_stream_iterations = int(post_stream_iterations)
         self.housekeeping_interval = int(housekeeping_interval)
         self.publish_interval = int(publish_interval)
+        self.reset_probe = bool(reset_probe)
         self.current_iteration = 0
         self.all_data_arrived = False
         self.post_stream_count = 0
         self.initialized_gpu = False
+        # Pristine reconstruction state, snapshotted on first GPU init and
+        # used to reset the object (and optionally the probe) on flush.
+        self._obj_initial = None
+        self._probe_initial = None
+        self._flux_initial = None
         self.logger = logging.getLogger(
             kwargs.get("name", "PtychoReconstructionOp")
         )
@@ -292,6 +303,43 @@ class PtychoReconstructionOp(Operator):
 
     def setup(self, spec: OperatorSpec):
         spec.output("output").condition(ConditionType.NONE)
+
+    def flush(self):
+        """Reset reconstruction state for a new scan.
+
+        Resets iteration counters and the object to its initial guess. By
+        default the probe (and its flux) are CARRIED OVER from the previous
+        scan as a warm start, since consecutive scans usually share
+        illumination. Set ``reset_probe=True`` to fully reset the probe too.
+        """
+        with self.lock:
+            self.current_iteration = 0
+            self.all_data_arrived = False
+            self.post_stream_count = 0
+            if self.initialized_gpu:
+                pty_model = self.ptycho_state["pty_model"]
+                pty_model.obj.array_global[:] = self._obj_initial
+                pty_model.obj.array_global_old[:] = self._obj_initial
+                if self.reset_probe:
+                    # Full reset: restore initial probe + flux so iteration 0
+                    # recomputes flux and re-normalises the probe.
+                    pty_model.probe.array_states[:] = self._probe_initial
+                    pty_model.source.flux = self._flux_initial
+                # else: leave the previous scan's probe and flux untouched.
+                # flux stays >= 0, so the iter-0 re-normalisation branch in
+                # compute() does not fire and the carried probe is preserved.
+
+        if self.reset_probe:
+            self.logger.info(
+                "Flushed ptycho recon state (object + probe reset to initial)"
+            )
+        else:
+            self.logger.warning(
+                "Ptycho flush: object reset, but PROBE CARRIED OVER from the "
+                "previous scan (warm start). If a new scan's reconstruction "
+                "looks wrong, the probe may need resetting — set "
+                "ptychography.reset_probe: true in the config."
+            )
 
     def compute(self, op_input, op_output, context):
         # Snapshot fill level
@@ -496,6 +544,14 @@ class PtychoReconstructionOp(Operator):
         pty_params.ind_binunshift = cp.asarray(pty_params.ind_binunshift)
         pty_model.detector.min_max = cp.asarray(pty_model.detector.min_max)
         to_device(pty_model, pty_params)
+
+        # Snapshot the pristine reconstruction state (on-device) so a new scan
+        # can reset the object back to its initial guess on flush. The probe
+        # snapshot is only used when reset_probe is enabled.
+        self._obj_initial = pty_model.obj.array_global.copy()
+        self._probe_initial = pty_model.probe.array_states.copy()
+        self._flux_initial = pty_model.source.flux  # may be < 0 (auto)
+
         self.logger.info("GPU initialisation complete")
 
 

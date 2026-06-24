@@ -99,7 +99,12 @@ class SinkAndPublishOp(Operator):
         # Local counters (not shared)
         self.processed_frame_count = 0
         self.processed_batch_count = 0
-        
+
+        # In-memory accumulator of per-batch arrays for the current scan.
+        # Avoids per-batch HDF5 open/close on the compute hot path; the file
+        # is written once at scan end (processing_end).
+        self.scan_buffer = []
+
         self.publish_folder = publish_folder
         self.publish_tensors = publish_tensors if publish_tensors is not None else []
         self.tensor2subject = tensor2subject
@@ -113,32 +118,29 @@ class SinkAndPublishOp(Operator):
         spec.input("input").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128).condition(ConditionType.NONE)
         spec.output("processing_end").condition(ConditionType.NONE)
 
-    def publish_to_folder(self, array_list, series_id):
+    def write_scan_file(self, series_id):
+        """Write the buffered scan to a single HDF5 file.
+
+        Called once at scan end (processing_end). Concatenates the per-batch
+        arrays accumulated in ``self.scan_buffer`` along the frame axis and
+        writes one ``stxm`` dataset — a single open/close, off the per-batch
+        hot path.
         """
-        Save data batch to temporary HDF5 file.
-        
-        Args:
-            array_list: List of arrays to save
-            series_id: Series identifier for filename
-        """
-        if self.publish_folder is None:
+        if self.publish_folder is None or not self.scan_buffer:
             return
-            
-        if not os.path.exists(self.temp_folder):
-            os.makedirs(self.temp_folder)
-        
-        filepath = os.path.join(self.temp_folder, f"{series_id}.h5")
-        mode = 'a' if os.path.exists(filepath) else 'w'
-        
-        with h5py.File(filepath, mode) as f:
-            dataset_key = f"batch_{self.processed_batch_count}"
-            data = np.concatenate(array_list, axis=1)
-            f.create_dataset(dataset_key, data=data)
+
+        os.makedirs(self.publish_folder, exist_ok=True)
+        data = np.concatenate(self.scan_buffer, axis=0)
+        filepath = os.path.join(self.publish_folder, f"{series_id}.h5")
+        with h5py.File(filepath, 'w') as f:
+            f.create_dataset('stxm', data=data)
+        self.logger.info(f"Wrote {data.shape[0]} frames to {filepath}")
 
     def flush(self):
-        """Reset counters on flush."""
+        """Reset counters and discard any buffered scan data on flush."""
         self.processed_frame_count = 0
         self.processed_batch_count = 0
+        self.scan_buffer = []
 
     def compute(self, op_input, op_output, context):
         """Receive, publish, and save processed data using metadata."""
@@ -194,16 +196,20 @@ class SinkAndPublishOp(Operator):
                         tensor = tensor.reshape(-1, 1)
                     arrays_to_publish.append(tensor)
         
-        # Save to temporary file using series_id from metadata
+        # Buffer this batch in memory (no file I/O on the hot path)
         if self.publish_folder is not None:
-            if len(arrays_to_publish) > 0 and series_id is not None:
-                self.publish_to_folder(arrays_to_publish, series_id)
-            
+            if len(arrays_to_publish) > 0:
+                self.scan_buffer.append(np.concatenate(arrays_to_publish, axis=1))
+
         self.processed_batch_count += 1
         self.processed_frame_count += tensor.shape[0]
-        
+
         # Check if processing is complete using metadata from upstream
         if self.processed_frame_count == series_frame_count:
+            # Write the whole scan once, now that no more batches are arriving
+            if self.publish_folder is not None and series_id is not None:
+                self.write_scan_file(series_id)
+
             op_output.emit("processing_end", "processing_end")
 
             _n = self.processed_frame_count
@@ -216,9 +222,14 @@ class SinkAndPublishOp(Operator):
 class PublishToCloudOp(Operator):
     """
     Operator for publishing completed datasets to cloud storage.
-    
+
     Triggered when processing completes, consolidates temporary batch files
     into a single HDF5 file and publishes to the final location.
+
+    NOTE: STXM saving now happens in SinkAndPublishOp.write_scan_file (a single
+    end-of-scan write), so the per-batch temp files this op consolidated are no
+    longer produced. It is retained for any external/temp-file workflow and
+    no-ops gracefully when no temp file is present.
     """
     
     def __init__(self, fragment,
@@ -259,7 +270,9 @@ class PublishToCloudOp(Operator):
 
             temp_file = os.path.join(self.temp_folder, f"{series_id}.h5")
             if not os.path.exists(temp_file):
-                self.logger.warning(f"Temp file {temp_file} does not exist")
+                # Expected now that SinkAndPublishOp writes the final file
+                # directly; nothing to consolidate.
+                self.logger.debug(f"No temp file {temp_file} to consolidate")
                 return
 
             try:

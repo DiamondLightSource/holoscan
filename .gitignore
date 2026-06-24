@@ -98,3 +98,10 @@ daqdup/streamproxy/streamproxy
 pipeline/legacy/zmq_panda_output.log
 
 test_data/
+
+# Pipeline output (STXM HDF writes, etc.)
+processed/
+pipeline/processed/
+
+# Local testing guide (kept out of main)
+pipeline/TESTING_flush_hdf.md
