@@ -92,45 +92,44 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
     ID = ptycho_cfg.get("ID", [1, 1, 1])
     pty_data, pty_model, pty_params = json_read.load(ptyrex_config_path, scan_ID, ID)
 
-    if ptycho_cfg["header"] == True: 
+    if ptycho_cfg.get("header", False):
         # -- 2. Get scan points and step sizes from zmq stream --
         context = zmq.Context()
         socket_h = context.socket(zmq.PULL)
         socket_h.setsockopt(zmq.RCVTIMEO, 100000)
-        print('endpoint header: ', ptycho_cfg["endpoint_header"])
+        endpoint_header = ptycho_cfg["endpoint_header"]
+        logger.info("Waiting for scan header on %s", endpoint_header)
 
-        try: 
-            socket_h.connect(ptycho_cfg["endpoint_header"])
-        except zmq.error.ZMQError:
-            logger.error("Failed to create socket")
-
-        try: 
+        try:
+            socket_h.connect(endpoint_header)
             header = socket_h.recv_json()
-        except:
+        except zmq.error.Again:
+            logger.error("Timed out waiting for scan header")
+            raise
+        except zmq.error.ZMQError:
             logger.error("Failed to receive header from socket")
             raise
+        finally:
+            socket_h.close(0)
+            context.term()
 
         npoints_h = int(header["nX"])
         npoints_v = int(header["nY"])
         step_size_h = float(header["dX"])
         step_size_v = float(header["dY"])
 
-        exp_time = float(header["exp_time"]) 
-        iter_time = 1.0/3000.0 # time for 1 iteration, roughly 3 kHz, ie 3000 frames/s
+        exp_time = float(header["exp_time"])
+        # Time for 1 iteration, roughly 3 kHz, ie 3000 frames/s.
+        iter_time = 1.0 / 3000.0
 
-        if exp_time <= iter_time:
-            pty_params.total_iterations = 2
-        else:
-            pty_params.total_iterations = np.ceil( exp_time / iter_time ) 
-
-        socket_h.close()
-    else: 
+        pty_params.total_iterations = max(2, int(np.ceil(exp_time / iter_time)))
+    else:
         # ── 2. Compute streaming parameters from npoints / step_size ───────
         npoints_h = ptycho_cfg["npoints_h"]
         npoints_v = ptycho_cfg["npoints_v"]
         step_size_h = ptycho_cfg["step_size_h"]
         step_size_v = ptycho_cfg["step_size_v"]
-        
+
         pty_params.total_iterations = ptycho_cfg["total_iterations"]
 
     no_frames = npoints_h * npoints_v
@@ -145,8 +144,6 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         npoints_h, npoints_v, step_size_h, step_size_v,
         N[1], N[0], no_frames,
     )
-    
-    #pty_params.total_iterations = ptycho_cfg["total_iterations"]
 
     # Ensure string attributes expected by PtyREX save/config routines
     pty_params.recon_name = time.strftime("%Y%m%d-%H%M%S")
