@@ -43,10 +43,10 @@ ptychography:
   npoints_v: 32        # vertical scan points
   step_size_h: 0.35     # horizontal step size (microns)
   step_size_v: 0.35     # vertical step size (microns)
-  total_iterations: 30
+  total_iterations: 2
   post_stream_iterations: 1
   housekeeping_interval: 1
   publish_interval: 1
   reset_probe: false   # false = carry previous scan's probe forward (warm start); true = full probe reset each scan
-  header: False
+  header: True
   endpoint_header: "tcp://172.23.82.77:5558"

@@ -115,6 +115,14 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         step_size_h = float(header["dX"])
         step_size_v = float(header["dY"])
 
+        exp_time = float(header["exp_time"]) 
+        iter_time = 1.0/3000.0 # time for 1 iteration, roughly 3 kHz, ie 3000 frames/s
+
+        if exp_time <= iter_time:
+            pty_params.total_iterations = 2
+        else:
+            pty_params.total_iterations = np.ceil( exp_time / iter_time ) 
+
         socket_h.close()
     else: 
         # ── 2. Compute streaming parameters from npoints / step_size ───────
@@ -122,6 +130,8 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         npoints_v = ptycho_cfg["npoints_v"]
         step_size_h = ptycho_cfg["step_size_h"]
         step_size_v = ptycho_cfg["step_size_v"]
+        
+        pty_params.total_iterations = ptycho_cfg["total_iterations"]
 
     no_frames = npoints_h * npoints_v
     # Scan extent in microns with 20% padding (same formula as PtyREX streaming)
@@ -135,8 +145,8 @@ def init_ptycho_state(ptycho_cfg: dict) -> dict:
         npoints_h, npoints_v, step_size_h, step_size_v,
         N[1], N[0], no_frames,
     )
-
-    pty_params.total_iterations = ptycho_cfg["total_iterations"]
+    
+    #pty_params.total_iterations = ptycho_cfg["total_iterations"]
 
     # Ensure string attributes expected by PtyREX save/config routines
     pty_params.recon_name = time.strftime("%Y%m%d-%H%M%S")
