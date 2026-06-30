@@ -116,7 +116,6 @@ class SinkAndPublishOp(Operator):
 
     def setup(self, spec: OperatorSpec):
         spec.input("input").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128).condition(ConditionType.NONE)
-        spec.output("processing_end").condition(ConditionType.NONE)
 
     def write_scan_file(self, series_id):
         """Write the buffered scan to a single HDF5 file.
@@ -210,8 +209,6 @@ class SinkAndPublishOp(Operator):
             if self.publish_folder is not None and series_id is not None:
                 self.write_scan_file(series_id)
 
-            op_output.emit("processing_end", "processing_end")
-
             _n = self.processed_frame_count
             _b = self.processed_batch_count
             _elapsed = time.time() - series_start_time if series_start_time > 0 else 0
@@ -228,17 +225,20 @@ class PublishToCloudOp(Operator):
 
     NOTE: STXM saving now happens in SinkAndPublishOp.write_scan_file (a single
     end-of-scan write), so the per-batch temp files this op consolidated are no
-    longer produced. It is retained for any external/temp-file workflow and
-    no-ops gracefully when no temp file is present.
+    longer produced. It is retained for a possible future external/temp-file
+    workflow and no-ops gracefully when no temp file is present.
+
+    NOT CURRENTLY WIRED into the pipeline (see pipeline.py). To re-enable, feed a
+    completion trigger into its "trigger" input (e.g. from SinkAndPublishOp).
     """
-    
+
     def __init__(self, fragment,
                  publish_folder: str = None,
                  temp_folder: str = None,
                  *args, **kwargs):
         """
         Initialize cloud publishing operator.
-        
+
         Args:
             fragment: Holoscan fragment
             publish_folder: Final destination folder
@@ -256,14 +256,14 @@ class PublishToCloudOp(Operator):
         """Consolidate and publish dataset on trigger using metadata."""
         # Receive trigger - metadata is automatically merged
         trigger = op_input.receive("trigger")
-        
+
         if trigger == "processing_end":
             if self.publish_folder is None or self.temp_folder is None:
                 return
 
             # Get the series ID from metadata that flowed from upstream
             series_id = self.metadata.get("series_id")
-            
+
             if series_id is None:
                 self.logger.warning("No series_id found in metadata, cannot publish")
                 return
@@ -299,7 +299,7 @@ class PublishToCloudOp(Operator):
                             f.attrs[key] = value
 
                 self.logger.info(f"Published concatenated data to {publish_file}")
-                
+
                 # Remove temp file
                 os.remove(temp_file)
 

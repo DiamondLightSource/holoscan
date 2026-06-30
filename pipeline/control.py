@@ -12,8 +12,8 @@ class ControlOp(Operator):
     """
     Control operator for managing pipeline flow.
     
-    Handles control messages like flush and processing_end,
-    coordinating state across multiple operators.
+    Handles the flush control message, coordinating flush state across
+    multiple operators.
     """
     
     def __init__(self, fragment, *args,
@@ -35,17 +35,16 @@ class ControlOp(Operator):
         
     def setup(self, spec: OperatorSpec):
         spec.input("input").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128)
-        spec.output("output")
 
     def compute(self, op_input, op_output, context):
         """Handle control messages."""
         msg = op_input.receive("input")
-        
+
         if msg == "flush":
             # Flush all flushable operators
             for op in self.flushable_ops:
                 op.flush()
-            
+
             # Publish flush message through the backend if available
             if self.publish_backend is not None:
                 import numpy as np
@@ -53,11 +52,7 @@ class ControlOp(Operator):
                 # Also signal ptycho consumers; harmless when ptycho is disabled
                 # (no subscriber listens on this subject).
                 self.publish_backend.publish("ptycho_flush", np.array([1]))
-        
-        elif msg == "processing_end":
-            # Forward processing_end signal
-            op_output.emit("processing_end", "output")
-        
+
         else:
             self.logger.info(f"Received unknown message: {msg}")
 

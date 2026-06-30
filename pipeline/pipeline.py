@@ -28,7 +28,7 @@ from data_io import (
     GatherOp
 )
 from processing import MaskingOp
-from publish import SinkAndPublishOp, PublishToCloudOp
+from publish import SinkAndPublishOp
 from control import ControlOp
 
 # Try to import NATS (optional for testing)
@@ -133,15 +133,6 @@ class StxmApp(Application):
                                                **self.kwargs('sink_and_publish_op'),
                                                name="sink_and_publish_op")
 
-        # ===== Cloud Publishing Operator =====
-        publish_folder = self.kwargs('sink_and_publish_op')['publish_folder']
-        temp_folder = self.kwargs('sink_and_publish_op')['temp_folder']
-
-        publish_to_cloud_op = PublishToCloudOp(self,
-                                               publish_folder=publish_folder,
-                                               temp_folder=temp_folder,
-                                               name="publish_to_cloud_op")
-
         # ===== Control Operator =====
         flushable_ops = [gather_op, position_src, sink_and_publish_op]
 
@@ -205,10 +196,8 @@ class StxmApp(Application):
             self.add_flow(gather_op, ptycho_accum, {("output", "input")})
             self.add_flow(ptycho_recon, ptycho_publish, {("output", "input")})
 
-        # Control path: flush and completion signals
+        # Control path: flush signal (start message → unconditional idempotent flush)
         self.add_flow(img_src, control_op, {("flush", "input")})
-        self.add_flow(sink_and_publish_op, control_op, {("processing_end", "input")})
-        self.add_flow(control_op, publish_to_cloud_op, {("output", "trigger")})
 
 
 def main():
