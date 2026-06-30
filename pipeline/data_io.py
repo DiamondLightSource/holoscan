@@ -202,9 +202,10 @@ class ZmqRxPositionOp(Operator):
             elif msg_type == "data":
                 # Handle data message
                 datasets = msg["datasets"]
+                #print(datasets)
                 
                 # Extract position data
-                x = np.array(datasets["/FMC_IN.VAL1.Mean"]["data"])
+                x = np.array(datasets["/pi_x"]["data"]) #FMC_IN.VAL1.Mean
                 y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
                 z = np.array(datasets["/FMC_IN.VAL3.Mean"]["data"])
                 th = np.array(datasets["/INENC4.VAL.Mean"]["data"])
@@ -213,8 +214,8 @@ class ZmqRxPositionOp(Operator):
                 
                 # Get starting_sample_number and size from the message
                 # All datasets should have the same starting_sample_number and size
-                starting_sample_number = datasets["/FMC_IN.VAL1.Mean"]["starting_sample_number"]
-                batch_size = datasets["/FMC_IN.VAL1.Mean"]["size"]
+                starting_sample_number = datasets["/pi_x"]["starting_sample_number"] #FMC_IN.VAL1.Mean
+                batch_size = datasets["/pi_x"]["size"] #FMC_IN.VAL1.Mean
                 
                 # Calculate position_ids directly from starting_sample_number
                 position_ids = starting_sample_number + np.arange(batch_size)
@@ -458,7 +459,7 @@ class GatherOp(Operator):
                   gather -> masking_op -> publish
     """
     
-    def __init__(self, fragment, *args, **kwargs):
+    def __init__(self, fragment, *args, batch_size: int = 1, **kwargs):
         """
         Initialize gather operator.
         
@@ -470,7 +471,8 @@ class GatherOp(Operator):
         self.positions = np.zeros((0, 4))
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
-        
+        self.batch_size = int(batch_size)
+
         self.logger = logging.getLogger(kwargs.get("name", "GatherOp"))
         super().__init__(fragment, *args, **kwargs)
         
@@ -486,6 +488,14 @@ class GatherOp(Operator):
         self.positions = np.zeros((0, 4))
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
+        self.logger.info(
+            f"[FLUSH VERIFY] GatherOp cleared: "
+            f"images={None if self.images is None else self.images.shape}, "
+            f"image_ids={self.image_ids.size}, "
+            f"positions={self.positions.shape}, "
+            f"position_ids={self.position_ids.size}, "
+            f"count={self.count}"
+        )
 
     def compute(self, op_input, op_output, context): 
         """Gather and synchronize image and position data."""
@@ -517,7 +527,8 @@ class GatherOp(Operator):
         if self.images is not None and self.image_ids.size > 0 and self.position_ids.size > 0:
             common_ids = np.intersect1d(self.image_ids, self.position_ids).astype(int)
             
-            if common_ids.size > 0:
+            #if common_ids.size > 0:
+            if int(common_ids.size) >= self.batch_size:
                 # Create vectorized masks for efficient filtering
                 mask_positions = np.isin(self.position_ids, common_ids)
                 mask_images = np.isin(self.image_ids, common_ids)

@@ -96,6 +96,7 @@ class StxmApp(Application):
         # ===== Gathering Operator (I/O - synchronizes images and positions) =====
         gather_op = GatherOp(self,
                              PeriodicCondition(self, int(0.01 * 1e9)),
+                             batch_size=self.kwargs('image_src')['batch_size'],
                              name="gather_op")
 
         # ===== Masking Operator (Processing - computes intensities) =====
