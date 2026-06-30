@@ -53,6 +53,14 @@ class ControlOp(Operator):
                 # (no subscriber listens on this subject).
                 self.publish_backend.publish("ptycho_flush", np.array([1]))
 
+        elif msg == "recon_complete":
+            # Plumbing for PR2 (header preempt) / PR3 (tomography boundary).
+            # No flush here on purpose: a completed single-projection scan must
+            # keep its result until the next start/header. The flush-on-
+            # completion / per-projection semantics are added with the
+            # tomography work.
+            self.logger.info("Reconstruction complete signal received")
+
         else:
             self.logger.info(f"Received unknown message: {msg}")
 

@@ -195,6 +195,8 @@ class StxmApp(Application):
         if self.ptychography_enabled:
             self.add_flow(gather_op, ptycho_accum, {("output", "input")})
             self.add_flow(ptycho_recon, ptycho_publish, {("output", "input")})
+            # Completion signal → control (logged in PR1; drives flush in PR3)
+            self.add_flow(ptycho_recon, control_op, {("complete", "input")})
 
         # Control path: flush signal (start message → unconditional idempotent flush)
         self.add_flow(img_src, control_op, {("flush", "input")})

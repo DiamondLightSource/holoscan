@@ -51,6 +51,9 @@ class PtychoAccumulatorOp(Operator):
     def __init__(self, fragment, *args, ptycho_state, **kwargs):
         self.ptycho_state = ptycho_state
         self.lock = ptycho_state["lock"]
+        # Tracks whether any frames have been accumulated since the last flush,
+        # so a redundant flush (e.g. the unconditional start-flush, R-2) is free.
+        self._dirty = False
         self.logger = logging.getLogger(kwargs.get("name", "PtychoAccumulatorOp"))
         super().__init__(fragment, *args, **kwargs)
 
@@ -60,16 +63,25 @@ class PtychoAccumulatorOp(Operator):
         ).condition(ConditionType.NONE)
 
     def flush(self):
-        """Reset fill level and zero out GPU buffers for a new series."""
+        """Reset fill level and zero out GPU buffers for a new series.
+
+        No-ops when nothing has been accumulated since the last flush (R-2), so
+        the unconditional start-flush is free when buffers are already clean.
+        Buffer zeroing happens under the lock so the reconstruction op can never
+        observe half-zeroed buffers (R-3).
+        """
         with self.lock:
+            if not self._dirty:
+                return
             self.ptycho_state["filled_until"] = 0
-        self.ptycho_state["raw_gpu"][:] = 0
-        self.ptycho_state["positions_full"][:] = 0
-        self.ptycho_state["tilts_full"][:] = 0
-        # Clear auto-centre so the new scan re-derives its own scan centre
-        # from the first batch rather than reusing the previous scan's.
-        self.ptycho_state["scan_center_py"] = None
-        self.ptycho_state["scan_center_px"] = None
+            self.ptycho_state["raw_gpu"][:] = 0
+            self.ptycho_state["positions_full"][:] = 0
+            self.ptycho_state["tilts_full"][:] = 0
+            # Clear auto-centre so the new scan re-derives its own scan centre
+            # from the first batch rather than reusing the previous scan's.
+            self.ptycho_state["scan_center_py"] = None
+            self.ptycho_state["scan_center_px"] = None
+            self._dirty = False
         self.logger.info("Flushed ptychography accumulator buffers")
 
     def compute(self, op_input, op_output, context):
@@ -155,6 +167,7 @@ class PtychoAccumulatorOp(Operator):
         # Atomically update fill counter
         with self.lock:
             self.ptycho_state["filled_until"] = new_end
+            self._dirty = True
 
         # Summary when buffer is full
         if new_end >= self.ptycho_state["no_frames"]:
@@ -292,6 +305,9 @@ class PtychoReconstructionOp(Operator):
         self.all_data_arrived = False
         self.post_stream_count = 0
         self.initialized_gpu = False
+        # Emitted exactly once per scan when the final iteration is reached;
+        # reset on flush so the next scan/projection can signal again.
+        self._completed = False
         # Pristine reconstruction state, snapshotted on first GPU init and
         # used to reset the object (and optionally the probe) on flush.
         self._obj_initial = None
@@ -304,6 +320,8 @@ class PtychoReconstructionOp(Operator):
 
     def setup(self, spec: OperatorSpec):
         spec.output("output").condition(ConditionType.NONE)
+        # Completion signal to ControlOp (plumbing for PR2/PR3).
+        spec.output("complete").condition(ConditionType.NONE)
 
     def flush(self):
         """Reset reconstruction state for a new scan.
@@ -317,6 +335,7 @@ class PtychoReconstructionOp(Operator):
             self.current_iteration = 0
             self.all_data_arrived = False
             self.post_stream_count = 0
+            self._completed = False
             if self.initialized_gpu:
                 pty_model = self.ptycho_state["pty_model"]
                 pty_model.obj.array_global[:] = self._obj_initial
@@ -508,6 +527,18 @@ class PtychoReconstructionOp(Operator):
                 "iteration": self.current_iteration,
             }
             op_output.emit(out, "output")
+
+        # Completion signal — emitted once when the scan's final iteration is
+        # reached (reuses the existing `is_last` predicate, S9). Plumbing for
+        # PR2 (header preempt) / PR3 (tomography boundary); ControlOp currently
+        # only logs it, so a completed single-projection scan keeps its result
+        # until the next start/header.
+        if is_last and not self._completed:
+            self._completed = True
+            op_output.emit("recon_complete", "complete")
+            self.logger.info(
+                "Reconstruction complete at iteration %d", self.current_iteration
+            )
 
         t_end = time.perf_counter()
         self.logger.info(
