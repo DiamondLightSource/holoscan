@@ -203,7 +203,7 @@ class ZmqRxPositionOp(Operator):
                 # Handle data message
                 datasets = msg["datasets"]
                 #print(datasets)
-                
+
                 # Extract position data
                 x = np.array(datasets["/pi_x"]["data"]) #FMC_IN.VAL1.Mean
                 y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
@@ -472,6 +472,12 @@ class GatherOp(Operator):
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
         self.batch_size = int(batch_size)
+        # Deferred flush: flush() sets this flag and the actual cache clear
+        # happens at the top of the next compute(), so it never mutates the
+        # caches while compute() is mid-synchronise. This avoids the boolean-
+        # index race (data_io.py "size of axis is 0 but ... 64") when a flush
+        # arrives mid-stream — e.g. PR2's header preemption.
+        self._flush_requested = False
 
         self.logger = logging.getLogger(kwargs.get("name", "GatherOp"))
         super().__init__(fragment, *args, **kwargs)
@@ -482,23 +488,29 @@ class GatherOp(Operator):
         spec.output("output")
 
     def flush(self):
-        """Reset all cached data on flush."""
+        """Request a cache reset. Deferred to the top of the next compute() so it
+        never clears the caches while compute() is mid-synchronise (thread-safe)."""
+        self._flush_requested = True
+
+    def _perform_flush(self):
+        """Actually clear the caches — only ever called from compute()."""
         self.images = None
         self.image_ids = np.zeros((0,), dtype=int)
         self.positions = np.zeros((0, 4))
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
         self.logger.info(
-            f"[FLUSH VERIFY] GatherOp cleared: "
-            f"images={None if self.images is None else self.images.shape}, "
-            f"image_ids={self.image_ids.size}, "
-            f"positions={self.positions.shape}, "
-            f"position_ids={self.position_ids.size}, "
-            f"count={self.count}"
+            "[FLUSH VERIFY] GatherOp cleared: images=None, image_ids=0, "
+            "positions=(0, 4), position_ids=0, count=0"
         )
 
-    def compute(self, op_input, op_output, context): 
+    def compute(self, op_input, op_output, context):
         """Gather and synchronize image and position data."""
+        # Perform any requested flush here — single-threaded w.r.t. the caches.
+        if self._flush_requested:
+            self._flush_requested = False
+            self._perform_flush()
+
         # Receive image data
         images_dict = op_input.receive("images")
         if images_dict is not None:

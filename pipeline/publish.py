@@ -104,6 +104,9 @@ class SinkAndPublishOp(Operator):
         # Avoids per-batch HDF5 open/close on the compute hot path; the file
         # is written once at scan end (processing_end).
         self.scan_buffer = []
+        # Save-state tracking so flush never discards an unwritten scan buffer.
+        self._written = False
+        self._series_id = None
 
         self.publish_folder = publish_folder
         self.publish_tensors = publish_tensors if publish_tensors is not None else []
@@ -134,12 +137,26 @@ class SinkAndPublishOp(Operator):
         with h5py.File(filepath, 'w') as f:
             f.create_dataset('stxm', data=data)
         self.logger.info(f"Wrote {data.shape[0]} frames to {filepath}")
+        # Self-contained: mark saved and clear the buffer so a later flush has
+        # nothing to discard.
+        self._written = True
+        self.scan_buffer = []
 
     def flush(self):
-        """Reset counters and discard any buffered scan data on flush."""
+        """Reset counters. If the buffer still holds data that was never written
+        (a flush arrived before the end-of-scan write), write it out first so a
+        scan's STXM file is never lost."""
+        if (self.scan_buffer and not self._written
+                and self.publish_folder is not None and self._series_id is not None):
+            self.logger.warning(
+                "Flush with %d unwritten STXM batch(es) — writing before clearing",
+                len(self.scan_buffer),
+            )
+            self.write_scan_file(self._series_id)
         self.processed_frame_count = 0
         self.processed_batch_count = 0
         self.scan_buffer = []
+        self._written = False
 
     def compute(self, op_input, op_output, context):
         """Receive, publish, and save processed data using metadata."""
@@ -199,12 +216,16 @@ class SinkAndPublishOp(Operator):
         if self.publish_folder is not None:
             if len(arrays_to_publish) > 0:
                 self.scan_buffer.append(np.concatenate(arrays_to_publish, axis=1))
+                self._written = False        # new unsaved data
+                self._series_id = series_id  # remembered for a defensive flush-save
 
         self.processed_batch_count += 1
         self.processed_frame_count += tensor.shape[0]
 
-        # Check if processing is complete using metadata from upstream
-        if self.processed_frame_count == series_frame_count:
+        # Check if processing is complete using metadata from upstream. Use >=
+        # (not ==) so a batch that overshoots the exact count (e.g. frame count
+        # not a multiple of batch_size) still triggers the end-of-scan save.
+        if series_frame_count > 0 and self.processed_frame_count >= series_frame_count:
             # Write the whole scan once, now that no more batches are arriving
             if self.publish_folder is not None and series_id is not None:
                 self.write_scan_file(series_id)

@@ -54,6 +54,11 @@ class PtychoAccumulatorOp(Operator):
         # Tracks whether any frames have been accumulated since the last flush,
         # so a redundant flush (e.g. the unconditional start-flush, R-2) is free.
         self._dirty = False
+        # Deferred flush (see GatherOp): flush() sets this flag; the actual reset
+        # happens at the top of the next compute(), so it never zeros the GPU
+        # buffers while compute() is mid-write — race-safe even for a mid-stream
+        # flush (PR2 header preemption).
+        self._flush_requested = False
         self.logger = logging.getLogger(kwargs.get("name", "PtychoAccumulatorOp"))
         super().__init__(fragment, *args, **kwargs)
 
@@ -63,28 +68,33 @@ class PtychoAccumulatorOp(Operator):
         ).condition(ConditionType.NONE)
 
     def flush(self):
-        """Reset fill level and zero out GPU buffers for a new series.
+        """Request a reset; performed at the top of the next compute() (deferred,
+        so it never races the buffer writes in compute)."""
+        self._flush_requested = True
 
-        No-ops when nothing has been accumulated since the last flush (R-2), so
-        the unconditional start-flush is free when buffers are already clean.
-        Buffer zeroing happens under the lock so the reconstruction op can never
-        observe half-zeroed buffers (R-3).
-        """
+    def _perform_flush(self):
+        """Reset fill level and zero the GPU buffers. Only ever called from
+        compute(), so it is single-threaded w.r.t. the buffer writes. No-ops when
+        nothing has been accumulated since the last flush (free redundant flush)."""
+        self._flush_requested = False
+        if not self._dirty:
+            return
         with self.lock:
-            if not self._dirty:
-                return
             self.ptycho_state["filled_until"] = 0
-            self.ptycho_state["raw_gpu"][:] = 0
-            self.ptycho_state["positions_full"][:] = 0
-            self.ptycho_state["tilts_full"][:] = 0
-            # Clear auto-centre so the new scan re-derives its own scan centre
-            # from the first batch rather than reusing the previous scan's.
-            self.ptycho_state["scan_center_py"] = None
-            self.ptycho_state["scan_center_px"] = None
-            self._dirty = False
+        self.ptycho_state["raw_gpu"][:] = 0
+        self.ptycho_state["positions_full"][:] = 0
+        self.ptycho_state["tilts_full"][:] = 0
+        # Clear auto-centre so the new scan re-derives its own scan centre
+        # from the first batch rather than reusing the previous scan's.
+        self.ptycho_state["scan_center_py"] = None
+        self.ptycho_state["scan_center_px"] = None
+        self._dirty = False
         self.logger.info("Flushed ptychography accumulator buffers")
 
     def compute(self, op_input, op_output, context):
+        # Perform any requested flush here — single-threaded w.r.t. the buffers.
+        if self._flush_requested:
+            self._perform_flush()
         data = op_input.receive("input")
         if data is None:
             return
@@ -308,6 +318,10 @@ class PtychoReconstructionOp(Operator):
         # Emitted exactly once per scan when the final iteration is reached;
         # reset on flush so the next scan/projection can signal again.
         self._completed = False
+        # Deferred flush (see GatherOp/accumulator): flush() sets this flag; the
+        # object/counter reset happens at the top of the next compute(), so it
+        # never races the PIE object update — race-safe for a mid-stream flush.
+        self._flush_requested = False
         # Pristine reconstruction state, snapshotted on first GPU init and
         # used to reset the object (and optionally the probe) on flush.
         self._obj_initial = None
@@ -324,30 +338,42 @@ class PtychoReconstructionOp(Operator):
         spec.output("complete").condition(ConditionType.NONE)
 
     def flush(self):
-        """Reset reconstruction state for a new scan.
+        """Request a reset; performed at the top of the next compute() (deferred,
+        so the object/counter reset never races the PIE update in compute)."""
+        self._flush_requested = True
+
+    def _perform_flush(self):
+        """Reset reconstruction state for a new scan. Only ever called from
+        compute(), so the object reset is single-threaded w.r.t. the PIE update.
 
         Resets iteration counters and the object to its initial guess. By
         default the probe (and its flux) are CARRIED OVER from the previous
         scan as a warm start, since consecutive scans usually share
         illumination. Set ``reset_probe=True`` to fully reset the probe too.
         """
+        self._flush_requested = False
+        self.current_iteration = 0
+        self.all_data_arrived = False
+        self.post_stream_count = 0
+        self._completed = False
+        # Clear the shared fill counter too, so this op immediately sees "no data"
+        # and won't re-process the just-finished scan before the accumulator's own
+        # (deferred) flush zeros the buffers. Both ops resetting it to 0 is
+        # consistent; the accumulator's flush runs before it writes new frames.
         with self.lock:
-            self.current_iteration = 0
-            self.all_data_arrived = False
-            self.post_stream_count = 0
-            self._completed = False
-            if self.initialized_gpu:
-                pty_model = self.ptycho_state["pty_model"]
-                pty_model.obj.array_global[:] = self._obj_initial
-                pty_model.obj.array_global_old[:] = self._obj_initial
-                if self.reset_probe:
-                    # Full reset: restore initial probe + flux so iteration 0
-                    # recomputes flux and re-normalises the probe.
-                    pty_model.probe.array_states[:] = self._probe_initial
-                    pty_model.source.flux = self._flux_initial
-                # else: leave the previous scan's probe and flux untouched.
-                # flux stays >= 0, so the iter-0 re-normalisation branch in
-                # compute() does not fire and the carried probe is preserved.
+            self.ptycho_state["filled_until"] = 0
+        if self.initialized_gpu:
+            pty_model = self.ptycho_state["pty_model"]
+            pty_model.obj.array_global[:] = self._obj_initial
+            pty_model.obj.array_global_old[:] = self._obj_initial
+            if self.reset_probe:
+                # Full reset: restore initial probe + flux so iteration 0
+                # recomputes flux and re-normalises the probe.
+                pty_model.probe.array_states[:] = self._probe_initial
+                pty_model.source.flux = self._flux_initial
+            # else: leave the previous scan's probe and flux untouched.
+            # flux stays >= 0, so the iter-0 re-normalisation branch in
+            # compute() does not fire and the carried probe is preserved.
 
         if self.reset_probe:
             self.logger.info(
@@ -362,6 +388,10 @@ class PtychoReconstructionOp(Operator):
             )
 
     def compute(self, op_input, op_output, context):
+        # Perform any requested flush here — single-threaded w.r.t. the PIE update.
+        if self._flush_requested:
+            self._perform_flush()
+
         # Snapshot fill level
         with self.lock:
             n_filled = self.ptycho_state["filled_until"]
@@ -528,12 +558,14 @@ class PtychoReconstructionOp(Operator):
             }
             op_output.emit(out, "output")
 
-        # Completion signal — emitted once when the scan's final iteration is
-        # reached (reuses the existing `is_last` predicate, S9). Plumbing for
-        # PR2 (header preempt) / PR3 (tomography boundary); ControlOp currently
-        # only logs it, so a completed single-projection scan keeps its result
-        # until the next start/header.
-        if is_last and not self._completed:
+        # Completion signal — emitted once, only when the scan is GENUINELY
+        # complete: all frames have arrived AND the final (post-stream) iteration
+        # is done. Gating on all_data_arrived is essential — without it, a low
+        # total_iterations exhausts mid-stream and fires "complete" while frames
+        # are still arriving, which would flush GatherOp mid-compute (race) and
+        # reset the object before the full scan is reconstructed. ControlOp
+        # flushes on this signal (Task 3: flush after the last iteration).
+        if is_last and self.all_data_arrived and not self._completed:
             self._completed = True
             op_output.emit("recon_complete", "complete")
             self.logger.info(
