@@ -30,6 +30,7 @@ from data_io import (
 from processing import MaskingOp
 from publish import SinkAndPublishOp
 from control import ControlOp
+from header_io import HeaderRxOp
 
 # Try to import NATS (optional for testing)
 try:
@@ -58,6 +59,14 @@ class StxmApp(Application):
         self.num_decompress_ops = 4
         self.ptychography_enabled = False
         self.ptycho_state = None
+        # Always-present shared holder (S11) for projection/frame counts, written
+        # by the header op and read by both the STXM and ptycho paths. Populated
+        # in main(); the frame count is filled in by configure_scan_geometry.
+        self.scan_state = {
+            "no_frames": 0,
+            "num_projections": 1,
+            "current_projection": 0,
+        }
         super().__init__(*args, **kwargs)
         self.enable_metadata(True)
 
@@ -178,6 +187,20 @@ class StxmApp(Application):
                                publish_backend=publish_backend,
                                name="control_op")
 
+        # ===== Header Source (live scan geometry, optional) =====
+        # A dedicated ZMQ SUB socket for JSON scan-geometry headers. Reconfigures
+        # geometry on the fly and preempts an in-flight recon (R-4 handshake).
+        header_src = None
+        header_cfg = self.kwargs('header_src')
+        if header_cfg:
+            header_src = HeaderRxOp(self,
+                                    name="header_src",
+                                    scan_state=self.scan_state,
+                                    ptycho_state=self.ptycho_state,
+                                    **header_cfg)
+        else:
+            logger.warning("No header_src config — live scan headers disabled")
+
         # ===== Connect Operators =====
         # I/O: Image reception and decompression -> gather
         for i in range(self.num_decompress_ops):
@@ -200,6 +223,12 @@ class StxmApp(Application):
 
         # Control path: flush signal (start message → unconditional idempotent flush)
         self.add_flow(img_src, control_op, {("flush", "input")})
+
+        # Header path: live geometry header → control (flush for new dataset).
+        # The ptycho geometry reconfigure is driven separately via the R-4
+        # handshake in ptycho_state (header op sets preempt_requested).
+        if header_src is not None:
+            self.add_flow(header_src, control_op, {("header", "input")})
 
 
 def main():
@@ -236,7 +265,9 @@ def main():
         from ptychography_setup import init_ptycho_state
 
         logger.info("Initialising ptychography state…")
-        app.ptycho_state = init_ptycho_state(ptycho_cfg)
+        # Pass the shared scan_state so configure_scan_geometry can mirror the
+        # frame count for the STXM path and header op (S11).
+        app.ptycho_state = init_ptycho_state(ptycho_cfg, app.scan_state)
         app.ptychography_enabled = True
         worker_threads = max(worker_threads, 8)
         logger.info("Ptychography enabled (worker_threads=%d)", worker_threads)

@@ -20,6 +20,14 @@ position_src:
   zmq_endpoint: "tcp://172.23.82.204:6666" # production endpoint
   receive_timeout_ms: 1000  # Increased timeout for testing
 
+header_src:
+  # Dedicated ZMQ SUB socket for live scan-geometry headers (PR2). A JSON
+  # object with npoints_h/npoints_v/step_size_h/step_size_v/num_projections
+  # reconfigures scan geometry on the fly and preempts an in-flight recon.
+  #zmq_endpoint: "tcp://172.23.82.77:5557" # Local simulator
+  zmq_endpoint: "tcp://172.23.82.204:6667" # production endpoint (placeholder)
+  receive_timeout_ms: 100  # short so the blocking recv doesn't hold a worker thread
+
 masking_op:
   center_x: 524  # Adjusted for 192x192 images (center)
   center_y: 287  # Adjusted for 192x192 images (center)
@@ -40,10 +48,15 @@ ptychography:
   ptyrex_config: "/workdir/PtyREX/config_409907.json"
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
-  npoints_h: 100        # horizontal scan points
-  npoints_v: 100        # vertical scan points
-  step_size_h: 0.25     # horizontal step size (microns)
-  step_size_v: 0.25     # vertical step size (microns)
+  # Scan grid now comes from the live header (header_src). These set the GPU
+  # buffer capacity (allocated once, never realloced — R-6) and the default
+  # geometry used at startup before any header arrives.
+  max_npoints_h: 100        # buffer capacity + startup default grid (horizontal)
+  max_npoints_v: 100        # buffer capacity + startup default grid (vertical)
+  # capacity = 100*100 = 10000 frames (matches the prior committed 100x100 grid;
+  # a header requesting more frames is rejected — bump these with GPU RAM in mind)
+  default_step_size_h: 0.25 # startup step size (microns), until a header arrives
+  default_step_size_v: 0.25 # startup step size (microns), until a header arrives
   total_iterations: 25
   post_stream_iterations: 1
   housekeeping_interval: 1

@@ -179,10 +179,12 @@ class PtychoAccumulatorOp(Operator):
             self.ptycho_state["filled_until"] = new_end
             self._dirty = True
 
-        # Summary when buffer is full
+        # Summary when buffer is full. Buffers are allocated at capacity (R-6),
+        # so slice to the logical no_frames rather than the full buffer extent.
         if new_end >= self.ptycho_state["no_frames"]:
-            all_py = cp.asnumpy(self.ptycho_state["positions_full"][0, 0, :])
-            all_px = cp.asnumpy(self.ptycho_state["positions_full"][0, 1, :])
+            no_frames = self.ptycho_state["no_frames"]
+            all_py = cp.asnumpy(self.ptycho_state["positions_full"][0, 0, :no_frames])
+            all_px = cp.asnumpy(self.ptycho_state["positions_full"][0, 1, :no_frames])
             pty_model = self.ptycho_state["pty_model"]
             obj_h = int(pty_model.obj.sz_glo[-2])
             obj_w = int(pty_model.obj.sz_glo[-1])
@@ -387,10 +389,116 @@ class PtychoReconstructionOp(Operator):
                 "ptychography.reset_probe: true in the config."
             )
 
+    # ------------------------------------------------------------------
+    # Header preemption handshake (R-4)
+
+    def _save_and_signal_complete(self, op_output):
+        """Persist the in-flight partial result, then emit recon_complete.
+
+        Called at the top of compute() when a header preemption is requested, so
+        the current reconstruction is saved (finish-current-iteration → save)
+        before the geometry is reconfigured. No-ops the save when the recon has
+        not produced anything yet (idle / pre-first-iteration).
+        """
+        if self.initialized_gpu and self.current_iteration > 0:
+            pty_data = self.ptycho_state["pty_data"]
+            pty_model = self.ptycho_state["pty_model"]
+            pty_params = self.ptycho_state["pty_params"]
+            # Bring the object/probe to host and run the end-of-iteration save
+            # (writes pty_out). We are reconfiguring next, so we do not push the
+            # arrays back to device (no to_device).
+            from_device(pty_model, pty_params)
+            setup.after_iteration(pty_data, pty_model, pty_params, pty_plot=None)
+            obj_2d = np.squeeze(cp.asnumpy(pty_model.obj.array_global))
+            probe_2d = np.squeeze(cp.asnumpy(pty_model.probe.array_states))
+            out = {
+                "object_phase": np.angle(obj_2d).astype(np.float32),
+                "object_amp": np.abs(obj_2d).astype(np.float32),
+                "probe_phase": np.angle(probe_2d).astype(np.float32),
+                "probe_amp": np.abs(probe_2d).astype(np.float32),
+                "iteration": self.current_iteration,
+            }
+            op_output.emit(out, "output")
+            self.logger.info(
+                "Saved partial result before preemption (iter %d)",
+                self.current_iteration,
+            )
+        # Signal completion → ControlOp flushes all ops for the next dataset.
+        if not self._completed:
+            self._completed = True
+            op_output.emit("recon_complete", "complete")
+
+    def _apply_pending_geometry(self):
+        """Apply the header's staged geometry while quiesced, then clear the
+        handshake. Safe because no PIE iteration is in flight (Phase 2)."""
+        from ptychography_setup import configure_scan_geometry
+
+        with self.lock:
+            pending = self.ptycho_state.get("pending_geometry")
+            self.ptycho_state["pending_geometry"] = None
+        if pending is not None:
+            try:
+                configure_scan_geometry(self.ptycho_state, **pending)
+                self.logger.info("Applied new scan geometry from header")
+            except Exception:
+                # Never let a bad reconfigure take down the pipeline; keep the
+                # previous geometry and resume. (HeaderRxOp already rejects
+                # over-capacity grids; this guards anything unexpected.)
+                self.logger.exception(
+                    "Failed to apply new scan geometry — keeping previous geometry"
+                )
+                self.ptycho_state["needs_gpu_reinit"] = False
+        # A full geometry reconfigure subsumes any pending flush (the object is
+        # rebuilt from scratch), so drop a stale deferred flush that would
+        # otherwise reference the previous geometry's initial-object snapshot.
+        self._flush_requested = False
+        # Clear the handshake — next compute re-inits GPU for the new object.
+        self.ptycho_state["quiesced"].clear()
+        self.ptycho_state["preempt_requested"].clear()
+
+    def _reset_for_new_geometry(self):
+        """Re-init reconstruction state after a geometry change.
+
+        configure_scan_geometry rebuilt the object arrays on the host, so the
+        one-time GPU transfer and the pristine-object snapshot must be redone.
+        """
+        self.ptycho_state["needs_gpu_reinit"] = False
+        self.initialized_gpu = False
+        self._obj_initial = None
+        self._probe_initial = None
+        self._flux_initial = None
+        self.current_iteration = 0
+        self.all_data_arrived = False
+        self.post_stream_count = 0
+        self._completed = False
+        self.logger.info("Recon reset for new scan geometry")
+
     def compute(self, op_input, op_output, context):
+        # Header preemption handshake (R-4) takes priority over any flush so the
+        # in-flight partial is saved with the object still intact.
+        if self.ptycho_state["preempt_requested"].is_set():
+            if not self.ptycho_state["quiesced"].is_set():
+                # Phase 1: the current iteration is already finished (compute is
+                # atomic). Save the partial result + signal completion, then
+                # quiesce so the geometry can be re-pointed without racing a
+                # live PIE view.
+                self._save_and_signal_complete(op_output)
+                self.ptycho_state["quiesced"].set()
+                self.logger.info("Recon quiesced for header preemption")
+            else:
+                # Phase 2: still preempted and quiesced — apply the staged
+                # geometry now (nothing is touching the buffers) and clear the
+                # handshake. Next compute re-inits GPU for the new object.
+                self._apply_pending_geometry()
+            return
+
         # Perform any requested flush here — single-threaded w.r.t. the PIE update.
         if self._flush_requested:
             self._perform_flush()
+
+        # Geometry changed while quiesced — re-init GPU state for the new object.
+        if self.ptycho_state.get("needs_gpu_reinit"):
+            self._reset_for_new_geometry()
 
         # Snapshot fill level
         with self.lock:

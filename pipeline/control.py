@@ -63,6 +63,17 @@ class ControlOp(Operator):
             self._do_flush()
             self._flushed = True
 
+        elif msg == "header":
+            # A live header reconfigures the scan for a new dataset. Flush so the
+            # STXM path saves+clears its current buffer before reconfiguration
+            # (SinkAndPublishOp.flush writes any unwritten scan). This works even
+            # when ptychography is disabled; when enabled, the recon's own
+            # recon_complete (on quiesce) also flushes — harmless, flush is
+            # idempotent. Mark _flushed so the following start-flush skips.
+            self.logger.info("Header received — flushing for reconfigured scan")
+            self._do_flush()
+            self._flushed = True
+
         elif msg == "flush":
             # Scan-start safety flush: only flush if the buffers aren't already
             # clean from a completion flush. If the previous scan completed, this
