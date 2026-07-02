@@ -204,7 +204,7 @@ class ZmqRxPositionOp(Operator):
                 datasets = msg["datasets"]
                 
                 # Extract position data
-                x = np.array(datasets["/FMC_IN.VAL1.Mean"]["data"])
+                x = np.array(datasets["/pi_x"]["data"])
                 y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
                 z = np.array(datasets["/FMC_IN.VAL3.Mean"]["data"])
                 th = np.array(datasets["/INENC4.VAL.Mean"]["data"])
@@ -213,8 +213,8 @@ class ZmqRxPositionOp(Operator):
                 
                 # Get starting_sample_number and size from the message
                 # All datasets should have the same starting_sample_number and size
-                starting_sample_number = datasets["/FMC_IN.VAL1.Mean"]["starting_sample_number"]
-                batch_size = datasets["/FMC_IN.VAL1.Mean"]["size"]
+                starting_sample_number = datasets["/pi_x"]["starting_sample_number"]
+                batch_size = datasets["/pi_x"]["size"]
                 
                 # Calculate position_ids directly from starting_sample_number
                 position_ids = starting_sample_number + np.arange(batch_size)
