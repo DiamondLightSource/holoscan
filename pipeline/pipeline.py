@@ -139,11 +139,14 @@ class StxmApp(Application):
         sink_and_publish_op = SinkAndPublishOp(self,
                                                tensor2subject=tensor2subject,
                                                publish_backend=publish_backend,
+                                               scan_state=self.scan_state,
                                                **self.kwargs('sink_and_publish_op'),
                                                name="sink_and_publish_op")
 
         # ===== Control Operator =====
         flushable_ops = [gather_op, position_src, sink_and_publish_op]
+        ptycho_accum = None   # set below when ptychography is enabled
+        ptycho_recon = None
 
         # ===== Ptychography Branch (conditional) =====
         if self.ptychography_enabled:
@@ -170,6 +173,7 @@ class StxmApp(Application):
                 housekeeping_interval=ptycho_cfg["housekeeping_interval"],
                 publish_interval=ptycho_cfg["publish_interval"],
                 reset_probe=ptycho_cfg.get("reset_probe", False),
+                publish_folder=sink_config.get("publish_folder"),
                 name="ptycho_reconstruction",
             )
 
@@ -185,6 +189,9 @@ class StxmApp(Application):
         control_op = ControlOp(self,
                                flushable_ops=flushable_ops,
                                publish_backend=publish_backend,
+                               ptycho_accum=ptycho_accum,
+                               ptycho_recon=ptycho_recon,
+                               scan_state=self.scan_state,
                                name="control_op")
 
         # ===== Header Source (live scan geometry, optional) =====

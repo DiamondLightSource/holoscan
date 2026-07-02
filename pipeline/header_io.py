@@ -131,10 +131,13 @@ class HeaderRxOp(Operator):
                 )
                 return
 
-        # 1. Update the always-present shared holder (S11).
+        # 1. Update the always-present shared holder (S11). Set no_frames here too
+        #    (not only via configure_scan_geometry) so the STXM sink can segment
+        #    per projection even when ptychography is disabled.
         if self.scan_state is not None:
             self.scan_state["num_projections"] = num_projections
             self.scan_state["current_projection"] = 0
+            self.scan_state["no_frames"] = npoints_h * npoints_v
 
         # 2. Ptycho path: stage geometry + request preemption (R-4). The recon op
         #    applies configure_scan_geometry once it has quiesced, so no buffer

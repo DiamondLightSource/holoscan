@@ -376,7 +376,7 @@ class ZmqRxImageBatchOp(Operator):
 
                 self.batch[self.current_index] = data
                 if self.dummy_img_index:
-                    self.batch_ids[self.current_index] = self.series_frame_count - 1
+                    self.batch_ids[self.current_index] = self.series_frame_count
                 else:
                     # self.logger.info(f"Received image with id: {data_id}")
                     self.batch_ids[self.current_index] = data_id
@@ -472,6 +472,9 @@ class GatherOp(Operator):
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
         self.batch_size = int(batch_size)
+        # R-1 (PR3): latched once the series-end metadata is seen, so the final
+        # partial batch (< batch_size) is drained instead of stranded. Reset on flush.
+        self._series_finished = False
         # Deferred flush: flush() sets this flag and the actual cache clear
         # happens at the top of the next compute(), so it never mutates the
         # caches while compute() is mid-synchronise. This avoids the boolean-
@@ -499,6 +502,7 @@ class GatherOp(Operator):
         self.positions = np.zeros((0, 4))
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
+        self._series_finished = False
         self.logger.info(
             "[FLUSH VERIFY] GatherOp cleared: images=None, image_ids=0, "
             "positions=(0, 4), position_ids=0, count=0"
@@ -535,12 +539,24 @@ class GatherOp(Operator):
             self.positions = np.concatenate([self.positions, positions])
             self.position_ids = np.concatenate([self.position_ids, position_ids])
 
+        # R-1 (PR3): once the series has ended, drain the remaining matched IDs
+        # even if fewer than batch_size, so a final partial batch (no_frames not a
+        # multiple of batch_size) reaches the accumulator instead of stranding and
+        # idling the pipeline forever. series_finished flows from the image source
+        # via metadata on the final batch; latch it so the drain persists.
+        try:
+            if self.metadata is not None and self.metadata.get("series_finished", False):
+                self._series_finished = True
+        except Exception:
+            pass
+
         # Find common IDs between images and positions
         if self.images is not None and self.image_ids.size > 0 and self.position_ids.size > 0:
             common_ids = np.intersect1d(self.image_ids, self.position_ids).astype(int)
-            
+
+            drain = self._series_finished and int(common_ids.size) > 0
             #if common_ids.size > 0:
-            if int(common_ids.size) >= self.batch_size:
+            if int(common_ids.size) >= self.batch_size or drain:
                 # Create vectorized masks for efficient filtering
                 mask_positions = np.isin(self.position_ids, common_ids)
                 mask_images = np.isin(self.image_ids, common_ids)

@@ -19,19 +19,29 @@ class ControlOp(Operator):
     def __init__(self, fragment, *args,
                  flushable_ops: list[Operator] = None,
                  publish_backend = None,
+                 ptycho_accum = None,
+                 ptycho_recon = None,
+                 scan_state: dict = None,
                  **kwargs):
         """
         Initialize control operator.
-        
+
         Args:
             fragment: Holoscan fragment
             flushable_ops: List of operators that can be flushed
             publish_backend: Backend instance for publishing flush messages
+            ptycho_accum: PtychoAccumulatorOp (for the scoped projection advance)
+            ptycho_recon: PtychoReconstructionOp (for the scoped projection advance)
+            scan_state: shared holder whose current_projection is advanced at a
+                tomography projection boundary (PR3)
         """
         super().__init__(fragment, *args, **kwargs)
         self.logger = logging.getLogger(kwargs.get("name", "ControlOp"))
         self.flushable_ops = flushable_ops
         self.publish_backend = publish_backend
+        self.ptycho_accum = ptycho_accum
+        self.ptycho_recon = ptycho_recon
+        self.scan_state = scan_state
         # True once a completion (recon_complete) flush has run and no new scan
         # has started since. Lets the scan-start flush skip when the buffers are
         # already clean, so we don't double-flush (Task 3 flush-check-at-start).
@@ -62,6 +72,22 @@ class ControlOp(Operator):
             self.logger.info("Reconstruction complete — flushing for next scan")
             self._do_flush()
             self._flushed = True
+
+        elif msg == "projection_complete":
+            # PR3 tomography per-projection boundary: SCOPED advance. Reset the
+            # accumulator's fill level (carry preserved) and bump current_projection.
+            # The recon self-advances once it observes filled_until drop (so it can't
+            # re-complete the same projection). Do NOT flush GatherOp — its cached
+            # next-projection frames must survive (decision #11). The STXM sink
+            # segments itself by frame count (S2), so it isn't touched here.
+            if self.ptycho_accum is not None:
+                self.ptycho_accum.advance_projection()
+            if self.scan_state is not None:
+                self.scan_state["current_projection"] += 1
+                self.logger.info(
+                    "Projection complete — advanced to projection %d",
+                    self.scan_state["current_projection"],
+                )
 
         elif msg == "header":
             # A live header reconfigures the scan for a new dataset. Flush so the

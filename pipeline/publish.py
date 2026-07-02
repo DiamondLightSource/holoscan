@@ -80,6 +80,7 @@ class SinkAndPublishOp(Operator):
                  publish_backend: PublishBackend = None,
                  backend: str = "nats",
                  backend_endpoint: str = None,
+                 scan_state: dict = None,
                  **kwargs):
         """
         Initialize sink and publish operator.
@@ -100,13 +101,19 @@ class SinkAndPublishOp(Operator):
         self.processed_frame_count = 0
         self.processed_batch_count = 0
 
-        # In-memory accumulator of per-batch arrays for the current scan.
+        # In-memory accumulator of per-batch arrays for the current scan/projection.
         # Avoids per-batch HDF5 open/close on the compute hot path; the file
-        # is written once at scan end (processing_end).
+        # is written once at scan end (or per projection for tomography).
         self.scan_buffer = []
         # Save-state tracking so flush never discards an unwritten scan buffer.
         self._written = False
         self._series_id = None
+        # PR3 tomography: shared holder (num_projections, no_frames) + a LOCAL
+        # per-projection index/counter so the STXM path segments itself (S2),
+        # independent of the ptycho path's current_projection.
+        self.scan_state = scan_state
+        self._projection = 0
+        self._proj_frame_count = 0
 
         self.publish_folder = publish_folder
         self.publish_tensors = publish_tensors if publish_tensors is not None else []
@@ -142,6 +149,23 @@ class SinkAndPublishOp(Operator):
         self._written = True
         self.scan_buffer = []
 
+    def _write_projection_file(self, series_id, projection):
+        """PR3: write the current projection's buffered STXM to its own file,
+        named with the shared series_id + projection index (M2), then clear the
+        buffer for the next projection."""
+        if self.publish_folder is None or not self.scan_buffer:
+            return
+        os.makedirs(self.publish_folder, exist_ok=True)
+        data = np.concatenate(self.scan_buffer, axis=0)
+        filepath = os.path.join(self.publish_folder, f"{series_id}_proj{projection:02d}.h5")
+        with h5py.File(filepath, 'w') as f:
+            f.create_dataset('stxm', data=data)
+            f.attrs['projection'] = projection
+            f.attrs['series_id'] = str(series_id)
+        self.logger.info(f"Wrote projection {projection} ({data.shape[0]} frames) to {filepath}")
+        self._written = True
+        self.scan_buffer = []
+
     def flush(self):
         """Reset counters. If the buffer still holds data that was never written
         (a flush arrived before the end-of-scan write), write it out first so a
@@ -152,11 +176,18 @@ class SinkAndPublishOp(Operator):
                 "Flush with %d unwritten STXM batch(es) — writing before clearing",
                 len(self.scan_buffer),
             )
-            self.write_scan_file(self._series_id)
+            # Name with the projection index if we're mid-tomography.
+            scan_state = self.scan_state or {}
+            if int(scan_state.get("num_projections", 1)) > 1:
+                self._write_projection_file(self._series_id, self._projection)
+            else:
+                self.write_scan_file(self._series_id)
         self.processed_frame_count = 0
         self.processed_batch_count = 0
         self.scan_buffer = []
         self._written = False
+        self._projection = 0
+        self._proj_frame_count = 0
 
     def compute(self, op_input, op_output, context):
         """Receive, publish, and save processed data using metadata."""
@@ -222,19 +253,39 @@ class SinkAndPublishOp(Operator):
         self.processed_batch_count += 1
         self.processed_frame_count += tensor.shape[0]
 
-        # Check if processing is complete using metadata from upstream. Use >=
-        # (not ==) so a batch that overshoots the exact count (e.g. frame count
-        # not a multiple of batch_size) still triggers the end-of-scan save.
-        if series_frame_count > 0 and self.processed_frame_count >= series_frame_count:
-            # Write the whole scan once, now that no more batches are arriving
-            if self.publish_folder is not None and series_id is not None:
-                self.write_scan_file(series_id)
+        # Share series_id so the ptycho per-projection recon files can be named
+        # with the same identifier (PR3).
+        if self.scan_state is not None and series_id is not None:
+            self.scan_state["series_id"] = series_id
 
-            _n = self.processed_frame_count
-            _b = self.processed_batch_count
-            _elapsed = time.time() - series_start_time if series_start_time > 0 else 0
-            _rate = _n/_elapsed if _elapsed > 0 else 0
-            self.logger.info(f"{_n} processed in {_elapsed:.1f}s. speed: {_rate:.1f} Hz (in {_b} batches)")
+        scan_state = self.scan_state or {}
+        num_projections = int(scan_state.get("num_projections", 1))
+        proj_no_frames = int(scan_state.get("no_frames", 0))
+
+        if num_projections > 1 and proj_no_frames > 0:
+            # Tomography (S2): save one STXM file per projection, segmented by
+            # frame count — self-contained, no ControlOp round-trip. Uses >= with
+            # a count carry (I1); exact frame boundaries require no_frames to be a
+            # multiple of batch_size (a few overshoot frames otherwise land in the
+            # current projection's file).
+            self._proj_frame_count += tensor.shape[0]
+            if self._proj_frame_count >= proj_no_frames:
+                if self.publish_folder is not None and series_id is not None:
+                    self._write_projection_file(series_id, self._projection)
+                self._proj_frame_count -= proj_no_frames   # carry overshoot count
+                self._projection += 1
+        else:
+            # Single scan: write the whole series once (existing behaviour). Use
+            # >= (not ==) so a batch overshooting the exact count still triggers.
+            if series_frame_count > 0 and self.processed_frame_count >= series_frame_count:
+                if self.publish_folder is not None and series_id is not None:
+                    self.write_scan_file(series_id)
+
+                _n = self.processed_frame_count
+                _b = self.processed_batch_count
+                _elapsed = time.time() - series_start_time if series_start_time > 0 else 0
+                _rate = _n/_elapsed if _elapsed > 0 else 0
+                self.logger.info(f"{_n} processed in {_elapsed:.1f}s. speed: {_rate:.1f} Hz (in {_b} batches)")
 
 
 class PublishToCloudOp(Operator):
