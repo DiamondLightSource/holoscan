@@ -73,21 +73,13 @@ class ControlOp(Operator):
             self._do_flush()
             self._flushed = True
 
-        elif msg == "projection_complete":
-            # PR3 tomography per-projection boundary: SCOPED advance. Reset the
-            # accumulator's fill level (carry preserved) and bump current_projection.
-            # The recon self-advances once it observes filled_until drop (so it can't
-            # re-complete the same projection). Do NOT flush GatherOp — its cached
-            # next-projection frames must survive (decision #11). The STXM sink
-            # segments itself by frame count (S2), so it isn't touched here.
-            if self.ptycho_accum is not None:
-                self.ptycho_accum.advance_projection()
-            if self.scan_state is not None:
-                self.scan_state["current_projection"] += 1
-                self.logger.info(
-                    "Projection complete — advanced to projection %d",
-                    self.scan_state["current_projection"],
-                )
+        # PR4: tomography projection boundaries no longer round-trip through
+        # ControlOp. With double-buffering the accumulator flips write buffers
+        # itself and the recon owns current_projection + the read-buffer flip
+        # (avoiding a save-vs-bump race), so there is no "projection_complete"
+        # signal any more — the recon emits "recon_complete" only on the FINAL
+        # projection, handled above. ControlOp is kept for recon_complete / header
+        # / flush.
 
         elif msg == "header":
             # A live header reconfigures the scan for a new dataset. Flush so the

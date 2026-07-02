@@ -240,17 +240,26 @@ def configure_scan_geometry(
     # The buffers are allocated once at capacity in init_ptycho_state and never
     # realloced; the accumulator/recon index them via ptycho_state directly and
     # bound their reads to [:n_filled] (n_filled <= no_frames <= capacity).
+    # PR4: point the model at buffer 0 to start; the recon re-points these views
+    # to positions_full[read_idx] / raw_gpu[read_idx] each compute, so this is
+    # just the initial binding + the shape source for scan.original/previous.
     positions_full = ptycho_state["positions_full"]
     tilts_full = ptycho_state["tilts_full"]
-    pty_model.scan.positions = positions_full
-    pty_model.scan.tilts = tilts_full
-    pty_model.scan.original = cp.zeros_like(positions_full)
-    pty_model.scan.previous = cp.zeros_like(positions_full)
+    pty_model.scan.positions = positions_full[0]
+    pty_model.scan.tilts = tilts_full[0]
+    pty_model.scan.original = cp.zeros_like(positions_full[0])
+    pty_model.scan.previous = cp.zeros_like(positions_full[0])
 
     # ── Update shared state ────────────────────────────────────────────
+    # A (re)configure is a clean scan boundary: reset the ping-pong to buffer 0,
+    # both fill levels empty, buffer 0 claimed for the first projection.
     with ptycho_state["lock"]:
         ptycho_state["no_frames"] = no_frames
-        ptycho_state["filled_until"] = 0
+        nbuf = ptycho_state["num_buffers"]
+        ptycho_state["filled_until"] = [0] * nbuf
+        ptycho_state["write_idx"] = 0
+        ptycho_state["read_idx"] = 0
+        ptycho_state["buf_free"] = [i != 0 for i in range(nbuf)]
     ptycho_state["N"] = N
     # Clear auto-centre so the new geometry re-derives its own scan centre.
     ptycho_state["scan_center_py"] = None
@@ -309,14 +318,21 @@ def init_ptycho_state(ptycho_cfg: dict, scan_state: dict = None) -> dict:
     default_step_v = float(ptycho_cfg["default_step_size_v"])
 
     # ── 3. Pre-allocate GPU buffers ONCE at max capacity (R-6) ─────────
-    raw_gpu = cp.zeros((capacity, H, W), dtype=cp.uint32)
-    positions_full = cp.zeros((1, 2, capacity), dtype=cp.float32)
-    tilts_full = cp.zeros((1, 2, capacity), dtype=cp.float32)
+    # PR4 double-buffering: TWO buffer sets (ping-pong). While the recon
+    # finalizes projection N on the read buffer, the accumulator fills
+    # projection N+1 into the write buffer — so the accumulator never stops
+    # draining and a free-running detector is never backpressured across the
+    # ~one-iteration finalize window. Single-projection scans always use
+    # buffer 0 (no flip). Cost: 2× raw_gpu (~tens of MB).
+    NUM_BUFFERS = 2
+    raw_gpu = [cp.zeros((capacity, H, W), dtype=cp.uint32) for _ in range(NUM_BUFFERS)]
+    positions_full = [cp.zeros((1, 2, capacity), dtype=cp.float32) for _ in range(NUM_BUFFERS)]
+    tilts_full = [cp.zeros((1, 2, capacity), dtype=cp.float32) for _ in range(NUM_BUFFERS)]
 
     logger.info(
-        "ptycho_state buffers allocated at capacity: %d frames, "
-        "image size %dx%d, %d total iterations",
-        capacity, H, W, pty_params.total_iterations,
+        "ptycho_state buffers allocated at capacity: %d frames × %d buffers "
+        "(double-buffered), image size %dx%d, %d total iterations",
+        capacity, NUM_BUFFERS, H, W, pty_params.total_iterations,
     )
 
     # ── 4. Assemble ptycho_state (geometry filled in by configure) ─────
@@ -324,10 +340,21 @@ def init_ptycho_state(ptycho_cfg: dict, scan_state: dict = None) -> dict:
         "pty_data": pty_data,
         "pty_model": pty_model,
         "pty_params": pty_params,
-        "raw_gpu": raw_gpu,
-        "positions_full": positions_full,
-        "tilts_full": tilts_full,
-        "filled_until": 0,
+        "raw_gpu": raw_gpu,             # list[NUM_BUFFERS] of (capacity,H,W)
+        "positions_full": positions_full,  # list[NUM_BUFFERS]
+        "tilts_full": tilts_full,          # list[NUM_BUFFERS]
+        "num_buffers": NUM_BUFFERS,
+        # PR4 ping-pong state (all touched under "lock"):
+        #   filled_until[i] — fill level of buffer i
+        #   write_idx       — buffer the accumulator writes (accumulator owns)
+        #   read_idx        — buffer the recon reads (recon owns)
+        #   buf_free[i]     — buffer i holds no data the recon still needs, so the
+        #                     accumulator may claim it for a new projection. Init:
+        #                     buffer 0 is claimed for the first projection.
+        "filled_until": [0] * NUM_BUFFERS,
+        "write_idx": 0,
+        "read_idx": 0,
+        "buf_free": [i != 0 for i in range(NUM_BUFFERS)],
         "no_frames": 0,          # set by configure_scan_geometry
         "H": H,
         "W": W,

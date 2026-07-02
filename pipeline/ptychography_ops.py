@@ -64,8 +64,9 @@ class PtychoAccumulatorOp(Operator):
         # written into the next projection once the boundary advance (flush) has
         # reset filled_until to 0. None when there is no pending carry.
         self._carry = None
-        # Deferred per-projection advance (PR3), distinct from a full flush.
-        self._advance_requested = False
+        # One-shot flag so the "recon lagging" backpressure warning fires once per
+        # stall, not every 10 ms tick.
+        self._lapped = False
         self.logger = logging.getLogger(kwargs.get("name", "PtychoAccumulatorOp"))
         super().__init__(fragment, *args, **kwargs)
 
@@ -79,68 +80,92 @@ class PtychoAccumulatorOp(Operator):
         the next compute() (deferred, so it never races the buffer writes)."""
         self._flush_requested = True
 
-    def advance_projection(self):
-        """Request a per-projection advance (PR3): reset the fill level for the
-        next projection but PRESERVE the straddle carry and scan centre. Deferred
-        to the top of the next compute()."""
-        self._advance_requested = True
+    def _reset_pingpong(self):
+        """Reset the PR4 double-buffer ping-pong to its canonical scan-start state
+        under the lock. Idempotent, so the accumulator's and recon's deferred
+        flushes can both call it in any order without disagreeing."""
+        nbuf = self.ptycho_state["num_buffers"]
+        with self.lock:
+            self.ptycho_state["filled_until"] = [0] * nbuf
+            self.ptycho_state["write_idx"] = 0
+            self.ptycho_state["read_idx"] = 0
+            self.ptycho_state["buf_free"] = [i != 0 for i in range(nbuf)]
 
     def _perform_flush(self):
-        """Reset fill level and zero the GPU buffers. Only ever called from
-        compute(), so it is single-threaded w.r.t. the buffer writes. No-ops when
-        nothing has been accumulated since the last flush (free redundant flush)."""
+        """Reset fill levels + ping-pong and zero the GPU buffers. Only ever called
+        from compute(), so it is single-threaded w.r.t. the buffer writes. No-ops
+        when nothing has been accumulated since the last flush (free redundant
+        flush)."""
         self._flush_requested = False
         # A full flush is a scan boundary — any carried straddle-tail is stale.
         self._carry = None
         if not self._dirty:
             return
-        with self.lock:
-            self.ptycho_state["filled_until"] = 0
-        self.ptycho_state["raw_gpu"][:] = 0
-        self.ptycho_state["positions_full"][:] = 0
-        self.ptycho_state["tilts_full"][:] = 0
+        self._reset_pingpong()
+        for b in range(self.ptycho_state["num_buffers"]):
+            self.ptycho_state["raw_gpu"][b][:] = 0
+            self.ptycho_state["positions_full"][b][:] = 0
+            self.ptycho_state["tilts_full"][b][:] = 0
         # Clear auto-centre so the new scan re-derives its own scan centre
         # from the first batch rather than reusing the previous scan's.
         self.ptycho_state["scan_center_py"] = None
         self.ptycho_state["scan_center_px"] = None
         self._dirty = False
-        self.logger.info("Flushed ptychography accumulator buffers")
+        self.logger.info("Flushed ptychography accumulator buffers (both)")
 
-    def _perform_advance(self):
-        """Per-projection advance (PR3): reset filled_until to 0 for the next
-        projection while KEEPING the carry (written next compute) and the scan
-        centre (all projections share the same physical scan region). Buffers are
-        not zeroed — the next projection overwrites [0:no_frames] as it fills."""
-        self._advance_requested = False
+    def _try_flip(self):
+        """PR4: move the write cursor to the next buffer for the next projection,
+        iff that buffer is free (the recon has released it). Returns False when the
+        other buffer is still owned by the recon (we've lapped it by a full
+        projection) so the caller backpressures instead of overwriting live data."""
+        nbuf = self.ptycho_state["num_buffers"]
         with self.lock:
-            self.ptycho_state["filled_until"] = 0
-        self._dirty = False
-        self.logger.info("Accumulator advanced to next projection (carry preserved)")
+            other = (self.ptycho_state["write_idx"] + 1) % nbuf
+            if not self.ptycho_state["buf_free"][other]:
+                return False
+            self.ptycho_state["buf_free"][other] = False
+            self.ptycho_state["write_idx"] = other
+            self.ptycho_state["filled_until"][other] = 0
+        self.logger.info("Accumulator flipped to buffer %d for next projection", other)
+        return True
 
     def compute(self, op_input, op_output, context):
         # Perform any requested flush here — single-threaded w.r.t. the buffers.
         if self._flush_requested:
             self._perform_flush()
-        # Per-projection advance (PR3) — after a full flush takes precedence.
-        if self._advance_requested:
-            self._perform_advance()
 
         scan_state = self.ptycho_state.get("scan_state") or {}
         num_projections = int(scan_state.get("num_projections", 1))
         no_frames = self.ptycho_state["no_frames"]
+        w = self.ptycho_state["write_idx"]
 
-        # PR3: write a carried straddle-tail into the freshly-advanced projection
-        # first (the boundary flush has reset filled_until to 0).
-        if self._carry is not None and self.ptycho_state["filled_until"] == 0:
+        # PR4: the current write buffer is full. For tomography, flip to the next
+        # buffer so we keep draining projection N+1 while the recon finalizes N on
+        # the read buffer. If the other buffer isn't free yet (recon hasn't
+        # released it — we've lapped it by a full projection), fall back to
+        # backpressure so frames queue upstream rather than being dropped. Single
+        # projection never flips.
+        if num_projections > 1 and self.ptycho_state["filled_until"][w] >= no_frames:
+            if not self._try_flip():
+                if not self._lapped:         # warn once per stall, not every tick
+                    self._lapped = True
+                    self.logger.warning(
+                        "Recon lagging: write buffer %d full but the recon still "
+                        "holds the other buffer — backpressuring upstream. Both "
+                        "double-buffer slots are in use; the detector is outrunning "
+                        "reconstruction.", w,
+                    )
+                return                       # lapped → clean backpressure fallback
+            self._lapped = False
+            w = self.ptycho_state["write_idx"]
+
+        # Write a carried straddle-tail into the (freshly-flipped, empty) write
+        # buffer first.
+        if self._carry is not None and self.ptycho_state["filled_until"][w] == 0:
             carry = self._carry
             self._carry = None
             self._accumulate(carry["images"], carry["positions"])
-
-        # PR3 backpressure: if this projection is full and awaiting the boundary
-        # advance (recon finalize + scoped flush), stop consuming input so the
-        # next projection's frames queue upstream instead of being dropped.
-        if num_projections > 1 and self.ptycho_state["filled_until"] >= no_frames:
-            return
+            w = self.ptycho_state["write_idx"]
 
         data = op_input.receive("input")
         if data is None:
@@ -150,13 +175,14 @@ class PtychoAccumulatorOp(Operator):
         positions = np.asarray(data["positions"])  # (N, 4) [x, y, z, theta]
         batch_size = images.shape[0]
 
-        filled = self.ptycho_state["filled_until"]
+        filled = self.ptycho_state["filled_until"][w]
         if filled + batch_size <= no_frames:
             # Batch fits within the current projection.
             self._accumulate(images, positions)
         elif num_projections > 1:
-            # PR3: batch straddles the projection boundary — write the head to
-            # fill this projection, carry the tail to the next one.
+            # Batch straddles the projection boundary — write the head to fill this
+            # projection; carry the tail. Next compute sees the buffer full, flips,
+            # and writes the carry into the new buffer.
             head = no_frames - filled
             self._accumulate(images[:head], positions[:head])
             self._carry = {"images": images[head:], "positions": positions[head:]}
@@ -176,7 +202,8 @@ class PtychoAccumulatorOp(Operator):
         batch_size = images.shape[0]
         if batch_size == 0:
             return
-        filled = self.ptycho_state["filled_until"]
+        w = self.ptycho_state["write_idx"]
+        filled = self.ptycho_state["filled_until"][w]
         pty_data = self.ptycho_state["pty_data"]
 
         # H2D + crop
@@ -222,11 +249,11 @@ class PtychoAccumulatorOp(Operator):
         positions_txyz = positions[:, [3, 0, 1, 2]]
         pos_y, pos_x = self._transform_positions(positions_txyz)
 
-        # Write into pre-allocated buffers
+        # Write into pre-allocated buffers (the current write buffer, PR4)
         new_end = filled + batch_size
-        self.ptycho_state["raw_gpu"][filled:new_end] = images_gpu
-        self.ptycho_state["positions_full"][0, 0, filled:new_end] = cp.asarray(pos_y)
-        self.ptycho_state["positions_full"][0, 1, filled:new_end] = cp.asarray(pos_x)
+        self.ptycho_state["raw_gpu"][w][filled:new_end] = images_gpu
+        self.ptycho_state["positions_full"][w][0, 0, filled:new_end] = cp.asarray(pos_y)
+        self.ptycho_state["positions_full"][w][0, 1, filled:new_end] = cp.asarray(pos_x)
 
         # Diagnostics on first batch
         if filled == 0:
@@ -244,17 +271,17 @@ class PtychoAccumulatorOp(Operator):
                 pos_y.min(), pos_y.max(), pos_x.min(), pos_x.max(),
             )
 
-        # Atomically update fill counter
+        # Atomically update fill counter (for the current write buffer)
         with self.lock:
-            self.ptycho_state["filled_until"] = new_end
+            self.ptycho_state["filled_until"][w] = new_end
             self._dirty = True
 
         # Summary when buffer is full. Buffers are allocated at capacity (R-6),
         # so slice to the logical no_frames rather than the full buffer extent.
         if new_end >= self.ptycho_state["no_frames"]:
             no_frames = self.ptycho_state["no_frames"]
-            all_py = cp.asnumpy(self.ptycho_state["positions_full"][0, 0, :no_frames])
-            all_px = cp.asnumpy(self.ptycho_state["positions_full"][0, 1, :no_frames])
+            all_py = cp.asnumpy(self.ptycho_state["positions_full"][w][0, 0, :no_frames])
+            all_px = cp.asnumpy(self.ptycho_state["positions_full"][w][0, 1, :no_frames])
             pty_model = self.ptycho_state["pty_model"]
             obj_h = int(pty_model.obj.sz_glo[-2])
             obj_w = int(pty_model.obj.sz_glo[-1])
@@ -418,12 +445,11 @@ class PtychoReconstructionOp(Operator):
         self._flush_requested = True
 
     def _perform_advance(self):
-        """Per-projection reset (PR3): fresh object + iteration counters for the
-        next projection, probe carried over (warm start). Does NOT touch
-        filled_until — the accumulator owns the fill level across the boundary.
-        Driven by the recon itself once it observes filled_until drop below
-        no_frames (i.e. the accumulator has advanced), so it never re-completes
-        the same projection."""
+        """Per-projection reset: fresh object + iteration counters for the next
+        projection, probe carried over (warm start). Does NOT touch the buffers —
+        the read buffer was just released and the recon now reads the other one.
+        Called from _flip_read (PR4) when the recon moves to the next projection's
+        buffer, so it never re-completes the projection it just finished."""
         self.current_iteration = 0
         self.all_data_arrived = False
         self.post_stream_count = 0
@@ -436,6 +462,21 @@ class PtychoReconstructionOp(Operator):
                 pty_model.probe.array_states[:] = self._probe_initial
                 pty_model.source.flux = self._flux_initial
         self.logger.info("Recon advanced to next projection (object reset, probe carried)")
+
+    def _flip_read(self, scan_state):
+        """PR4: finished the current read buffer — release it back to the
+        accumulator, advance current_projection (the recon owns it, so the file
+        save can't race a ControlOp bump), move the read cursor to the next
+        buffer, and reset the object/counters for the next projection."""
+        nbuf = self.ptycho_state["num_buffers"]
+        with self.lock:
+            r = self.ptycho_state["read_idx"]
+            self.ptycho_state["buf_free"][r] = True          # accumulator may reuse it
+            self.ptycho_state["read_idx"] = (r + 1) % nbuf
+        scan_state["current_projection"] = int(
+            scan_state.get("current_projection", 0)
+        ) + 1
+        self._perform_advance()   # fresh object/counters (probe carried)
 
     def _perform_flush(self):
         """Reset reconstruction state for a new scan. Only ever called from
@@ -451,12 +492,16 @@ class PtychoReconstructionOp(Operator):
         self.all_data_arrived = False
         self.post_stream_count = 0
         self._completed = False
-        # Clear the shared fill counter too, so this op immediately sees "no data"
-        # and won't re-process the just-finished scan before the accumulator's own
-        # (deferred) flush zeros the buffers. Both ops resetting it to 0 is
-        # consistent; the accumulator's flush runs before it writes new frames.
+        # Reset the shared ping-pong (PR4) too, so this op immediately sees "no
+        # data" and won't re-process the just-finished scan before the
+        # accumulator's own (deferred) flush zeros the buffers. Idempotent with the
+        # accumulator's identical reset — order-independent.
+        nbuf = self.ptycho_state["num_buffers"]
         with self.lock:
-            self.ptycho_state["filled_until"] = 0
+            self.ptycho_state["filled_until"] = [0] * nbuf
+            self.ptycho_state["write_idx"] = 0
+            self.ptycho_state["read_idx"] = 0
+            self.ptycho_state["buf_free"] = [i != 0 for i in range(nbuf)]
         if self.initialized_gpu:
             pty_model = self.ptycho_state["pty_model"]
             pty_model.obj.array_global[:] = self._obj_initial
@@ -597,21 +642,17 @@ class PtychoReconstructionOp(Operator):
         num_projections = int(scan_state.get("num_projections", 1))
         no_frames = self.ptycho_state["no_frames"]
 
-        # PR3 tomography: after completing a projection, idle until the accumulator
-        # has advanced (filled_until dropped below no_frames). Self-advancing on
-        # that observation — rather than being pushed an advance — guarantees we
-        # never re-complete the same projection while its buffer is still full.
-        if self._completed and num_projections > 1:
-            with self.lock:
-                n_now = self.ptycho_state["filled_until"]
-            if n_now < no_frames:
-                self._perform_advance()   # fresh object/counters for the next projection
-            else:
-                return                     # still holding the finished projection
+        # PR4: after the FINAL projection completes we idle until the scan-end
+        # flush (ControlOp flushes on recon_complete). Non-final projections reset
+        # _completed in _flip_read on the same tick, so this only catches the
+        # final-idle case — the recon never re-processes a finished projection.
+        if self._completed:
+            return
 
-        # Snapshot fill level
+        # Snapshot fill level of the buffer we're reading (PR4 double-buffer).
         with self.lock:
-            n_filled = self.ptycho_state["filled_until"]
+            r = self.ptycho_state["read_idx"]
+            n_filled = self.ptycho_state["filled_until"][r]
 
         if n_filled == 0:
             return
@@ -626,7 +667,7 @@ class PtychoReconstructionOp(Operator):
             self.post_stream_count = 0
             pty_model = self.ptycho_state["pty_model"]
             pty_model.scan.original = cp.copy(
-                self.ptycho_state["positions_full"]
+                self.ptycho_state["positions_full"][r]
             )
             self.logger.info("All %d frames arrived", no_frames)
 
@@ -650,19 +691,19 @@ class PtychoReconstructionOp(Operator):
         pty_model = self.ptycho_state["pty_model"]
         pty_params = self.ptycho_state["pty_params"]
 
-        pty_model.scan.positions = self.ptycho_state["positions_full"][
+        pty_model.scan.positions = self.ptycho_state["positions_full"][r][
             :, :, :n_filled
         ]
-        pty_model.scan.tilts = self.ptycho_state["tilts_full"][
+        pty_model.scan.tilts = self.ptycho_state["tilts_full"][r][
             :, :, :n_filled
         ]
-        pty_data.raw_expanded = self.ptycho_state["raw_gpu"][:n_filled][
+        pty_data.raw_expanded = self.ptycho_state["raw_gpu"][r][:n_filled][
             cp.newaxis, :, :, :
         ]
 
         # Flux normalization — compute once on first iteration
         if self.current_iteration == 0 and pty_model.source.flux < 0:
-            raw_cpu = cp.asnumpy(self.ptycho_state["raw_gpu"][:n_filled])
+            raw_cpu = cp.asnumpy(self.ptycho_state["raw_gpu"][r][:n_filled])
             dp = pty_data.dp
             pty_model.source.flux = float(np.sum(
                 np.sum(raw_cpu, 0)[dp == 1]
@@ -717,8 +758,8 @@ class PtychoReconstructionOp(Operator):
                 "No valid positions (0/%d in object bounds), skipping iteration",
                 n_filled,
             )
-            pty_model.scan.positions = self.ptycho_state["positions_full"]
-            pty_model.scan.tilts = self.ptycho_state["tilts_full"]
+            pty_model.scan.positions = self.ptycho_state["positions_full"][r]
+            pty_model.scan.tilts = self.ptycho_state["tilts_full"][r]
             return
 
         pty_params.frame_IDs = cp.asnumpy(valid_ids)
@@ -743,9 +784,9 @@ class PtychoReconstructionOp(Operator):
         combine_subsets_stream(pty_model, pty_params, recon_data)
         t_pie = time.perf_counter()
 
-        # Restore full buffer references for next accumulator writes
-        pty_model.scan.positions = self.ptycho_state["positions_full"]
-        pty_model.scan.tilts = self.ptycho_state["tilts_full"]
+        # Restore full (read-buffer) references after the sliced PIE view
+        pty_model.scan.positions = self.ptycho_state["positions_full"][r]
+        pty_model.scan.tilts = self.ptycho_state["tilts_full"][r]
 
         # Housekeeping (every N iterations or on last). For tomography
         # (num_projections > 1) a projection completes as soon as all its frames
@@ -790,20 +831,33 @@ class PtychoReconstructionOp(Operator):
         if is_last and self.all_data_arrived and not self._completed:
             self._completed = True
             if num_projections > 1:
-                # Tomography: save this projection, then advance (non-final) or
-                # end the scan (final projection). ControlOp does the scoped
-                # advance on "projection_complete" (accum+recon only, not gather).
+                # Tomography: save this projection using the CURRENT index, then
+                # either end the scan (final) or flip to the next projection's
+                # buffer. PR4: the recon owns current_projection and the read-buffer
+                # flip itself — no ControlOp round-trip — so it can never save the
+                # next projection under a stale index (the old race).
                 self._save_projection_file()
                 current_proj = int(scan_state.get("current_projection", 0))
                 if current_proj >= num_projections - 1:
-                    signal = "recon_complete"   # last projection → full scan end
+                    # Final projection → full scan end. ControlOp flushes on this.
+                    op_output.emit("recon_complete", "complete")
+                    self.logger.info(
+                        "Projection %d/%d complete (final) at iteration %d",
+                        current_proj, num_projections, self.current_iteration,
+                    )
+                    # _completed stays True → idle until the scan-end flush.
                 else:
-                    signal = "projection_complete"
-                op_output.emit(signal, "complete")
-                self.logger.info(
-                    "Projection %d/%d complete at iteration %d (signal=%s)",
-                    current_proj, num_projections, self.current_iteration, signal,
-                )
+                    # Release the finished read buffer to the accumulator and move
+                    # to the next projection's buffer (which the accumulator has
+                    # been filling meanwhile). Resets _completed → resume next tick.
+                    iter_done = self.current_iteration   # _flip_read resets it to 0
+                    self._flip_read(scan_state)
+                    self.logger.info(
+                        "Projection %d/%d complete at iteration %d — flipped read "
+                        "buffer to %d for next projection",
+                        current_proj, num_projections, iter_done,
+                        self.ptycho_state["read_idx"],
+                    )
             else:
                 op_output.emit("recon_complete", "complete")
                 self.logger.info(
