@@ -142,7 +142,7 @@ def main():
     )
 
     # Socket 3: proxy capture -> live processor
-    capture = context.socket(zmq.PUB)
+    capture = context.socket(zmq.PUSH)
     set_common_socket_options(
         capture,
         hwm=args.hwm,
@@ -167,7 +167,7 @@ def main():
         print("Starting ZeroMQ benchmark proxy")
         print(f"  frontend PULL connect: {args.detector}")
         print(f"  backend  PUSH bind:    {args.writer_bind}")
-        print(f"  capture  PUB bind:     {args.live_bind}")
+        print(f"  capture  PUSH bind:     {args.live_bind}")
         print(f"  io_threads:            {args.io_threads}")
         print(f"  hwm:                   {args.hwm} messages")
         print(f"  sndbuf:                {args.sndbuf}")
