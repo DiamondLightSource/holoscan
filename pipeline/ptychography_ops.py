@@ -40,6 +40,35 @@ _USE_PROFILING_UPDATE = _CAPTURE_GRAPH or bool(
 )
 
 
+def _ack_flush_and_maybe_release(scan_state, ack_key, logger):
+    """Mark one ptycho flush-execution ack and release the transition barrier
+    only when both ptycho acks are present in waiting_flush_exec."""
+    if not scan_state:
+        return
+
+    blocked_event = scan_state.get("transition_blocked_event")
+    if blocked_event is None or not blocked_event.is_set():
+        return
+
+    if scan_state.get("transition_phase", "idle") != "waiting_flush_exec":
+        return
+
+    scan_state[ack_key] = True
+    logger.info("Transition flush ack set: %s=True", ack_key)
+
+    if (
+        scan_state.get("ptycho_accum_flushed", False)
+        and scan_state.get("ptycho_recon_flushed", False)
+    ):
+        blocked_event.clear()
+        scan_state["transition_phase"] = "idle"
+        scan_state["ptycho_accum_flushed"] = False
+        scan_state["ptycho_recon_flushed"] = False
+        logger.info(
+            "Transition barrier released after both ptycho flush executions"
+        )
+
+
 class PtychoAccumulatorOp(Operator):
     """Fast batch accumulator for ptychography.
 
@@ -97,9 +126,13 @@ class PtychoAccumulatorOp(Operator):
         when nothing has been accumulated since the last flush (free redundant
         flush)."""
         self._flush_requested = False
+        scan_state = self.ptycho_state.get("scan_state") or {}
         # A full flush is a scan boundary — any carried straddle-tail is stale.
         self._carry = None
         if not self._dirty:
+            _ack_flush_and_maybe_release(
+                scan_state, "ptycho_accum_flushed", self.logger
+            )
             return
         self._reset_pingpong()
         for b in range(self.ptycho_state["num_buffers"]):
@@ -112,6 +145,7 @@ class PtychoAccumulatorOp(Operator):
         self.ptycho_state["scan_center_px"] = None
         self._dirty = False
         self.logger.info("Flushed ptychography accumulator buffers (both)")
+        _ack_flush_and_maybe_release(scan_state, "ptycho_accum_flushed", self.logger)
 
     def _try_flip(self):
         """PR4: move the write cursor to the next buffer for the next projection,
@@ -488,6 +522,7 @@ class PtychoReconstructionOp(Operator):
         illumination. Set ``reset_probe=True`` to fully reset the probe too.
         """
         self._flush_requested = False
+        scan_state = self.ptycho_state.get("scan_state") or {}
         self.current_iteration = 0
         self.all_data_arrived = False
         self.post_stream_count = 0
@@ -526,6 +561,8 @@ class PtychoReconstructionOp(Operator):
                 "looks wrong, the probe may need resetting — set "
                 "ptychography.reset_probe: true in the config."
             )
+
+        _ack_flush_and_maybe_release(scan_state, "ptycho_recon_flushed", self.logger)
 
     # ------------------------------------------------------------------
     # Header preemption handshake (R-4)
