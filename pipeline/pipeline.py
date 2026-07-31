@@ -113,6 +113,7 @@ class StxmApp(Application):
         gather_op = GatherOp(self,
                              PeriodicCondition(self, int(0.01 * 1e9)),
                              batch_size=self.kwargs('image_src')['batch_size'],
+                             scan_state=self.scan_state,
                              name="gather_op")
 
         # ===== Masking Operator (Processing - computes intensities) =====
@@ -239,6 +240,7 @@ class StxmApp(Application):
 
         # Control path: flush signal (start message → unconditional idempotent flush)
         self.add_flow(img_src, control_op, {("flush", "input")})
+        self.add_flow(gather_op, control_op, {("control", "input")})
 
         # Header path: live geometry header → control (flush for new dataset).
         # The ptycho geometry reconfigure is driven separately via the R-4
