@@ -240,7 +240,6 @@ class StxmApp(Application):
 
         # Control path: flush signal (start message → unconditional idempotent flush)
         self.add_flow(img_src, control_op, {("flush", "input")})
-        self.add_flow(gather_op, control_op, {("control", "input")})
 
         # Header path: live geometry header → control (flush for new dataset).
         # The ptycho geometry reconfigure is driven separately via the R-4

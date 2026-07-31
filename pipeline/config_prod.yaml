@@ -58,7 +58,6 @@ ptychography:
   post_stream_iterations: 1
   housekeeping_interval: 2
   publish_interval: 1
-  max_blocked_frames: 640
   reset_probe: false   # false = carry previous scan's probe forward (warm start); true = full probe reset each scan
   scan_range: [[0.0, 0.0], [0.0, 0.0]]  # [[x1, y1], [x2, y2]] motor coords (µm)
   R: [351.0, 364.0]  # scan range in pixels; must match actual scan extent
