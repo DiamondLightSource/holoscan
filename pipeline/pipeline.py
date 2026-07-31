@@ -14,6 +14,7 @@ This separates I/O operations (data_io) from computation (processing).
 """
 
 import logging
+import threading
 from argparse import ArgumentParser
 
 from holoscan.core import Application
@@ -66,6 +67,12 @@ class StxmApp(Application):
             "no_frames": 0,
             "num_projections": 1,
             "current_projection": 0,
+            "transition_blocked_event": threading.Event(),
+            "transition_phase": "idle",
+            "ptycho_accum_flushed": False,
+            "ptycho_recon_flushed": False,
+            "transition_error": None,
+            "max_blocked_frames": None,
         }
         super().__init__(*args, **kwargs)
         self.enable_metadata(True)
@@ -260,16 +267,23 @@ def main():
     # Load config to make kwargs available
     app.config(args.config)
 
+    image_src_config = app.kwargs('image_src')
+
     # Get scheduler parameters from config via kwargs
     scheduler_config = app.kwargs('scheduler')
     num_decompress_ops = scheduler_config.get('num_decompress_ops', 4)
     worker_threads = scheduler_config.get('worker_threads', 6)
 
+    ptycho_cfg = app.kwargs("ptychography")
+    default_blocked_frames = int(image_src_config.get("batch_size", 100)) * 10
+    app.scan_state["max_blocked_frames"] = int(
+        ptycho_cfg.get("max_blocked_frames", default_blocked_frames)
+    ) if ptycho_cfg else default_blocked_frames
+
     # Set num_decompress_ops - will be used in compose() when run() is called
     app.num_decompress_ops = num_decompress_ops
 
     # Ptychography setup (before compose)
-    ptycho_cfg = app.kwargs("ptychography")
     if ptycho_cfg and ptycho_cfg.get("enabled", False):
         from ptychography_setup import init_ptycho_state
 

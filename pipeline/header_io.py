@@ -151,6 +151,13 @@ class HeaderRxOp(Operator):
                     "step_size_v": step_size_v,
                 }
             self.ptycho_state["preempt_requested"].set()
+            if self.scan_state is not None:
+                self.scan_state["transition_blocked_event"].set()
+                self.scan_state["transition_phase"] = "waiting_quiesce"
+                self.scan_state["ptycho_accum_flushed"] = False
+                self.scan_state["ptycho_recon_flushed"] = False
+                self.scan_state["transition_error"] = None
+            self.logger.info("Header received — transition blocked, waiting for recon quiesce")
 
         # 3. Notify ControlOp so the STXM path flushes for the new dataset
         #    (works even when ptychography is disabled).
