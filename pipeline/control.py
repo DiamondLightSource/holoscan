@@ -121,6 +121,9 @@ class ControlOp(Operator):
             # deferred until the recon quiesces and emits recon_complete.
             self.logger.info("Header received — flushing for reconfigured scan")
             self._do_stxm_flush()
+            if self.publish_backend is not None:
+                import numpy as np
+                self.publish_backend.publish("stxm_flush", np.array([1]))
             self._flushed = True
 
         elif msg == "flush":
