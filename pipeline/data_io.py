@@ -480,6 +480,7 @@ class GatherOp(Operator):
         self.count = 0
         self.batch_size = int(batch_size)
         self.scan_state = scan_state
+        self._default_max_blocked_frames = int(self.batch_size) * 10
         # R-1 (PR3): latched once the series-end metadata is seen, so the final
         # partial batch (< batch_size) is drained instead of stranded. Reset on flush.
         self._series_finished = False
@@ -489,7 +490,9 @@ class GatherOp(Operator):
         # index race (data_io.py "size of axis is 0 but ... 64") when a flush
         # arrives mid-stream — e.g. PR2's header preemption.
         self._flush_requested = False
-        # PR5: track blocked matched-frame growth for observability.
+        # PR5: one-shot overflow signal while blocked (avoid repeated control spam)
+        # plus a small counter for transition observability.
+        self._transition_overflow_reported = False
         self._last_blocked_common = -1
 
         self.logger = logging.getLogger(kwargs.get("name", "GatherOp"))
@@ -499,12 +502,24 @@ class GatherOp(Operator):
         spec.input("images").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128).condition(ConditionType.NONE)
         spec.input("positions").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128).condition(ConditionType.NONE)
         spec.output("output")
+        spec.output("control").condition(ConditionType.NONE)
 
     def _transition_blocked(self):
         if self.scan_state is None:
             return False
         blocked_event = self.scan_state.get("transition_blocked_event")
         return bool(blocked_event is not None and blocked_event.is_set())
+
+    def _max_blocked_frames(self):
+        if self.scan_state is None:
+            return self._default_max_blocked_frames
+        value = self.scan_state.get("max_blocked_frames")
+        if value is None:
+            return self._default_max_blocked_frames
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return self._default_max_blocked_frames
 
     def flush(self):
         """Request a cache reset. Deferred to the top of the next compute() so it
@@ -519,6 +534,7 @@ class GatherOp(Operator):
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
         self._series_finished = False
+        self._transition_overflow_reported = False
         self._last_blocked_common = -1
         self.logger.info(
             "[FLUSH VERIFY] GatherOp cleared: images=None, image_ids=0, "
@@ -582,9 +598,25 @@ class GatherOp(Operator):
                             "Transition blocked: caching %d matched frames in GatherOp",
                             blocked_common,
                         )
+
+                    max_blocked_frames = self._max_blocked_frames()
+                    if blocked_common > max_blocked_frames:
+                        err = (
+                            "Gather blocked-cache overflow: matched="
+                            f"{blocked_common} exceeds max_blocked_frames="
+                            f"{max_blocked_frames}"
+                        )
+                        if self.scan_state is not None:
+                            self.scan_state["transition_error"] = err
+                        if not self._transition_overflow_reported:
+                            self._transition_overflow_reported = True
+                            self.logger.error(err)
+                            op_output.emit("transition_overflow", "control")
+                        return
                     return
 
-                # Transition resumed / not blocked.
+                # Transition resumed / not blocked: clear one-shot overflow latch.
+                self._transition_overflow_reported = False
                 self._last_blocked_common = -1
 
                 # Create vectorized masks for efficient filtering
