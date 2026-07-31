@@ -143,16 +143,6 @@ class ControlOp(Operator):
             else:
                 self._do_full_flush()
 
-        elif msg == "transition_overflow":
-            err = "Transition overflow reported by GatherOp"
-            if self.scan_state is not None:
-                err = self.scan_state.get("transition_error") or err
-            self.logger.error(err)
-            if self.publish_backend is not None:
-                import numpy as np
-                self.publish_backend.publish("transition_error", np.array([1]))
-            raise RuntimeError(err)
-
         else:
             self.logger.info(f"Received unknown message: {msg}")
 
