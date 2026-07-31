@@ -54,7 +54,13 @@ def _ack_flush_and_maybe_release(scan_state, ack_key, logger):
         return
 
     scan_state[ack_key] = True
-    logger.info("Transition flush ack set: %s=True", ack_key)
+    logger.info(
+        "Transition flush ack set: %s=True (phase=%s accum=%s recon=%s)",
+        ack_key,
+        scan_state.get("transition_phase", "idle"),
+        scan_state.get("ptycho_accum_flushed", False),
+        scan_state.get("ptycho_recon_flushed", False),
+    )
 
     if (
         scan_state.get("ptycho_accum_flushed", False)
@@ -65,7 +71,7 @@ def _ack_flush_and_maybe_release(scan_state, ack_key, logger):
         scan_state["ptycho_accum_flushed"] = False
         scan_state["ptycho_recon_flushed"] = False
         logger.info(
-            "Transition barrier released after both ptycho flush executions"
+            "Transition barrier released after both ptycho flush executions (phase=idle, blocked=False)"
         )
 
 

@@ -88,6 +88,12 @@ class ControlOp(Operator):
             if transition_blocked:
                 transition_blocked = self.scan_state["transition_blocked_event"].is_set()
             transition_phase = self.scan_state.get("transition_phase", "idle")
+        self.logger.info(
+            "Control message=%s (transition_blocked=%s phase=%s)",
+            msg,
+            transition_blocked,
+            transition_phase,
+        )
 
         if msg == "recon_complete":
             # The recon finished its final iteration and has ALREADY saved
@@ -100,6 +106,7 @@ class ControlOp(Operator):
                 self._request_ptycho_flush()
                 if self.scan_state is not None:
                     self.scan_state["transition_phase"] = "waiting_flush_exec"
+                    self.logger.info("Transition state -> waiting_flush_exec")
                 return
 
             self.logger.info("Reconstruction complete — flushing for next scan")

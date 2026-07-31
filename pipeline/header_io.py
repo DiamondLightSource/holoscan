@@ -135,9 +135,21 @@ class HeaderRxOp(Operator):
         #    (not only via configure_scan_geometry) so the STXM sink can segment
         #    per projection even when ptychography is disabled.
         if self.scan_state is not None:
+            prev_phase = self.scan_state.get("transition_phase", "idle")
+            prev_blocked = False
+            blocked_event = self.scan_state.get("transition_blocked_event")
+            if blocked_event is not None:
+                prev_blocked = blocked_event.is_set()
             self.scan_state["num_projections"] = num_projections
             self.scan_state["current_projection"] = 0
             self.scan_state["no_frames"] = npoints_h * npoints_v
+            self.logger.info(
+                "Header accepted: no_frames=%d num_projections=%d (prev_phase=%s, prev_blocked=%s)",
+                self.scan_state["no_frames"],
+                self.scan_state["num_projections"],
+                prev_phase,
+                prev_blocked,
+            )
 
         # 2. Ptycho path: stage geometry + request preemption (R-4). The recon op
         #    applies configure_scan_geometry once it has quiesced, so no buffer
@@ -157,8 +169,12 @@ class HeaderRxOp(Operator):
                 self.scan_state["ptycho_accum_flushed"] = False
                 self.scan_state["ptycho_recon_flushed"] = False
                 self.scan_state["transition_error"] = None
+                self.logger.info(
+                    "Transition state -> waiting_quiesce (blocked=True, acks reset)"
+                )
             self.logger.info("Header received — transition blocked, waiting for recon quiesce")
 
         # 3. Notify ControlOp so the STXM path flushes for the new dataset
         #    (works even when ptychography is disabled).
+        self.logger.info("Emitting header control token")
         op_output.emit("header", "header")

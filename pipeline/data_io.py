@@ -459,7 +459,14 @@ class GatherOp(Operator):
                   gather -> masking_op -> publish
     """
     
-    def __init__(self, fragment, *args, batch_size: int = 1, **kwargs):
+    def __init__(
+        self,
+        fragment,
+        *args,
+        batch_size: int = 1,
+        scan_state: dict = None,
+        **kwargs,
+    ):
         """
         Initialize gather operator.
         
@@ -472,6 +479,7 @@ class GatherOp(Operator):
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
         self.batch_size = int(batch_size)
+        self.scan_state = scan_state
         # R-1 (PR3): latched once the series-end metadata is seen, so the final
         # partial batch (< batch_size) is drained instead of stranded. Reset on flush.
         self._series_finished = False
@@ -481,6 +489,8 @@ class GatherOp(Operator):
         # index race (data_io.py "size of axis is 0 but ... 64") when a flush
         # arrives mid-stream — e.g. PR2's header preemption.
         self._flush_requested = False
+        # PR5: track blocked matched-frame growth for observability.
+        self._last_blocked_common = -1
 
         self.logger = logging.getLogger(kwargs.get("name", "GatherOp"))
         super().__init__(fragment, *args, **kwargs)
@@ -489,6 +499,12 @@ class GatherOp(Operator):
         spec.input("images").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128).condition(ConditionType.NONE)
         spec.input("positions").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128).condition(ConditionType.NONE)
         spec.output("output")
+
+    def _transition_blocked(self):
+        if self.scan_state is None:
+            return False
+        blocked_event = self.scan_state.get("transition_blocked_event")
+        return bool(blocked_event is not None and blocked_event.is_set())
 
     def flush(self):
         """Request a cache reset. Deferred to the top of the next compute() so it
@@ -503,6 +519,7 @@ class GatherOp(Operator):
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
         self._series_finished = False
+        self._last_blocked_common = -1
         self.logger.info(
             "[FLUSH VERIFY] GatherOp cleared: images=None, image_ids=0, "
             "positions=(0, 4), position_ids=0, count=0"
@@ -557,6 +574,24 @@ class GatherOp(Operator):
             drain = self._series_finished and int(common_ids.size) > 0
             #if common_ids.size > 0:
             if int(common_ids.size) >= self.batch_size or drain:
+                blocked_common = int(common_ids.size)
+                if self._transition_blocked():
+                    if blocked_common != self._last_blocked_common:
+                        self._last_blocked_common = blocked_common
+                        self.logger.info(
+                            "Transition blocked: caching %d matched frames in GatherOp",
+                            blocked_common,
+                        )
+                    return
+
+                # Transition resumed / not blocked.
+                if self._last_blocked_common >= 0:
+                    self.logger.info(
+                        "Transition unblocked: resuming GatherOp emit with %d cached matched frames",
+                        blocked_common,
+                    )
+                self._last_blocked_common = -1
+
                 # Create vectorized masks for efficient filtering
                 mask_positions = np.isin(self.position_ids, common_ids)
                 mask_images = np.isin(self.image_ids, common_ids)
