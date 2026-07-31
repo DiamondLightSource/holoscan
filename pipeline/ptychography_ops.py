@@ -166,6 +166,10 @@ class PtychoAccumulatorOp(Operator):
             self.ptycho_state["buf_free"][other] = False
             self.ptycho_state["write_idx"] = other
             self.ptycho_state["filled_until"][other] = 0
+            # Per-projection auto-centering: the first batch written into the
+            # new buffer must derive a fresh center for that projection.
+            self.ptycho_state["scan_center_py"] = None
+            self.ptycho_state["scan_center_px"] = None
         self.logger.info("Accumulator flipped to buffer %d for next projection", other)
         return True
 
@@ -397,9 +401,12 @@ class PtychoAccumulatorOp(Operator):
             halfview = self.ptycho_state["N"][0]/1.2/2 * 1e-6 * pty_model.scan.scale[0]
             self.ptycho_state["scan_center_py"] = float(cp.mean(py)) + halfview
             self.ptycho_state["scan_center_px"] = float(cp.mean(px))
+            scan_state = self.ptycho_state.get("scan_state") or {}
+            projection = int(scan_state.get("current_projection", 0))
             self.logger.info(
-                "Auto-centring scan: center_py=%.6e m, center_px=%.6e m "
+                "Auto-centring projection %d: center_py=%.6e m, center_px=%.6e m "
                 "(theta=%.2f°)",
+                projection,
                 self.ptycho_state["scan_center_py"],
                 self.ptycho_state["scan_center_px"],
                 theta,
