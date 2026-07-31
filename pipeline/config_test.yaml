@@ -8,7 +8,7 @@ image_src:
   #zmq_endpoint: "tcp://172.23.82.48:31001"  # Production endpoint
   zmq_endpoint: "tcp://172.23.82.77:5555"        # Local simulator
   receive_timeout_ms: 1000  # Increased timeout for testing
-  batch_size: 100         # Larger batch for testing
+  batch_size: 200         # Larger batch for testing
 
 decompress_op:
   # data_size: [192, 192]  # Match selun test data (192x192 images)
@@ -51,13 +51,13 @@ ptychography:
   # Scan grid now comes from the live header (header_src). These set the GPU
   # buffer capacity (allocated once, never realloced — R-6) and the default
   # geometry used at startup before any header arrives.
-  max_npoints_h: 100        # buffer capacity + startup default grid (horizontal)
+  max_npoints_h: 200        # buffer capacity + startup default grid (horizontal)
   max_npoints_v: 100        # buffer capacity + startup default grid (vertical)
   # capacity = 100*100 = 10000 frames (matches the prior committed 100x100 grid;
   # a header requesting more frames is rejected — bump these with GPU RAM in mind)
-  default_step_size_h: 0.25 # startup step size (microns), until a header arrives
-  default_step_size_v: 0.25 # startup step size (microns), until a header arrives
-  total_iterations: 25
+  default_step_size_h: 0.2 # startup step size (microns), until a header arrives
+  default_step_size_v: 0.2 # startup step size (microns), until a header arrives
+  total_iterations: 35
   post_stream_iterations: 1
   housekeeping_interval: 1
   publish_interval: 1
