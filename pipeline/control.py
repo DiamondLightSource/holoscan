@@ -63,6 +63,10 @@ class ControlOp(Operator):
         for op in self.ptycho_flush_ops:
             op.flush()
 
+    def _request_ptycho_flush(self):
+        """Request ptycho-side flush without doing any STXM work."""
+        self._do_ptycho_flush()
+
     def _do_full_flush(self):
         """Flush STXM + ptycho operators and broadcast flush signals."""
         self._do_stxm_flush()
@@ -77,11 +81,27 @@ class ControlOp(Operator):
     def compute(self, op_input, op_output, context):
         """Handle control messages."""
         msg = op_input.receive("input")
+        transition_blocked = False
+        transition_phase = "idle"
+        if self.scan_state is not None:
+            transition_blocked = bool(self.scan_state.get("transition_blocked_event"))
+            if transition_blocked:
+                transition_blocked = self.scan_state["transition_blocked_event"].is_set()
+            transition_phase = self.scan_state.get("transition_phase", "idle")
 
         if msg == "recon_complete":
             # The recon finished its final iteration and has ALREADY saved
             # (after_iteration -> pty_out) and published the result before emitting
             # this, so flushing now is safe (Task 3: flush after the last iteration).
+            if transition_blocked and transition_phase == "waiting_quiesce":
+                self.logger.info(
+                    "Recon quiesced for header transition — requesting ptycho flush"
+                )
+                self._request_ptycho_flush()
+                if self.scan_state is not None:
+                    self.scan_state["transition_phase"] = "waiting_flush_exec"
+                return
+
             self.logger.info("Reconstruction complete — flushing for next scan")
             self._do_full_flush()
             self._flushed = True
@@ -97,18 +117,23 @@ class ControlOp(Operator):
         elif msg == "header":
             # A live header reconfigures the scan for a new dataset. Flush so the
             # STXM path saves+clears its current buffer before reconfiguration
-            # (SinkAndPublishOp.flush writes any unwritten scan). This works even
-            # when ptychography is disabled; when enabled, the recon's own
-            # recon_complete (on quiesce) also flushes — harmless, flush is
-            # idempotent. Mark _flushed so the following start-flush skips.
+            # (SinkAndPublishOp.flush writes any unwritten scan). Ptycho flush is
+            # deferred until the recon quiesces and emits recon_complete.
             self.logger.info("Header received — flushing for reconfigured scan")
-            self._do_full_flush()
+            self._do_stxm_flush()
             self._flushed = True
 
         elif msg == "flush":
             # Scan-start safety flush: only flush if the buffers aren't already
             # clean from a completion flush. If the previous scan completed, this
             # no-ops (no double flush); if it was interrupted, this cleans up.
+            if transition_blocked:
+                self.logger.info(
+                    "Start-flush deferred for blocked transition — STXM-only flush now, ptycho waits for recon quiesce"
+                )
+                self._do_stxm_flush()
+                self._flushed = True
+                return
             if self._flushed:
                 self.logger.info("Start-flush skipped — already flushed on completion")
                 self._flushed = False
