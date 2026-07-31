@@ -225,9 +225,9 @@ def build_combined_figure():
 
     placeholder = np.zeros((64, 64)) * np.nan
     ptycho_axes_info = [
-        (ax_obj_phase,  "twilight", "object_phase"),
+        (ax_obj_phase,  "gray", "object_phase"),
         (ax_obj_amp,    "gray",     "object_amp"),
-        (ax_prb_phase,  "twilight", "probe_phase"),
+        (ax_prb_phase,  "gray", "probe_phase"),
         (ax_prb_amp,    "gray",     "probe_amp"),
     ]
     ptycho_ims = {}
