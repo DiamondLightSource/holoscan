@@ -17,7 +17,8 @@ class ControlOp(Operator):
     """
     
     def __init__(self, fragment, *args,
-                 flushable_ops: list[Operator] = None,
+                 stxm_flush_ops: list[Operator] = None,
+                 ptycho_flush_ops: list[Operator] = None,
                  publish_backend = None,
                  ptycho_accum = None,
                  ptycho_recon = None,
@@ -28,7 +29,8 @@ class ControlOp(Operator):
 
         Args:
             fragment: Holoscan fragment
-            flushable_ops: List of operators that can be flushed
+            stxm_flush_ops: STXM-side operators that can be flushed
+            ptycho_flush_ops: Ptycho-side operators that can be flushed
             publish_backend: Backend instance for publishing flush messages
             ptycho_accum: PtychoAccumulatorOp (for the scoped projection advance)
             ptycho_recon: PtychoReconstructionOp (for the scoped projection advance)
@@ -37,7 +39,8 @@ class ControlOp(Operator):
         """
         super().__init__(fragment, *args, **kwargs)
         self.logger = logging.getLogger(kwargs.get("name", "ControlOp"))
-        self.flushable_ops = flushable_ops
+        self.stxm_flush_ops = stxm_flush_ops or []
+        self.ptycho_flush_ops = ptycho_flush_ops or []
         self.publish_backend = publish_backend
         self.ptycho_accum = ptycho_accum
         self.ptycho_recon = ptycho_recon
@@ -50,10 +53,20 @@ class ControlOp(Operator):
     def setup(self, spec: OperatorSpec):
         spec.input("input").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128)
 
-    def _do_flush(self):
-        """Flush all flushable operators and broadcast the flush signals."""
-        for op in self.flushable_ops:
+    def _do_stxm_flush(self):
+        """Flush STXM-side operators only."""
+        for op in self.stxm_flush_ops:
             op.flush()
+
+    def _do_ptycho_flush(self):
+        """Flush ptycho-side operators only."""
+        for op in self.ptycho_flush_ops:
+            op.flush()
+
+    def _do_full_flush(self):
+        """Flush STXM + ptycho operators and broadcast flush signals."""
+        self._do_stxm_flush()
+        self._do_ptycho_flush()
         if self.publish_backend is not None:
             import numpy as np
             self.publish_backend.publish("stxm_flush", np.array([1]))  # Simple signal
@@ -70,7 +83,7 @@ class ControlOp(Operator):
             # (after_iteration -> pty_out) and published the result before emitting
             # this, so flushing now is safe (Task 3: flush after the last iteration).
             self.logger.info("Reconstruction complete — flushing for next scan")
-            self._do_flush()
+            self._do_full_flush()
             self._flushed = True
 
         # PR4: tomography projection boundaries no longer round-trip through
@@ -89,7 +102,7 @@ class ControlOp(Operator):
             # recon_complete (on quiesce) also flushes — harmless, flush is
             # idempotent. Mark _flushed so the following start-flush skips.
             self.logger.info("Header received — flushing for reconfigured scan")
-            self._do_flush()
+            self._do_full_flush()
             self._flushed = True
 
         elif msg == "flush":
@@ -100,7 +113,7 @@ class ControlOp(Operator):
                 self.logger.info("Start-flush skipped — already flushed on completion")
                 self._flushed = False
             else:
-                self._do_flush()
+                self._do_full_flush()
 
         else:
             self.logger.info(f"Received unknown message: {msg}")

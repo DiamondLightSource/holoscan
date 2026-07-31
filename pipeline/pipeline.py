@@ -144,7 +144,8 @@ class StxmApp(Application):
                                                name="sink_and_publish_op")
 
         # ===== Control Operator =====
-        flushable_ops = [gather_op, position_src, sink_and_publish_op]
+        stxm_flush_ops = [gather_op, position_src, sink_and_publish_op]
+        ptycho_flush_ops = []
         ptycho_accum = None   # set below when ptychography is enabled
         ptycho_recon = None
 
@@ -183,11 +184,12 @@ class StxmApp(Application):
                 name="ptycho_publish",
             )
 
-            flushable_ops.append(ptycho_accum)
-            flushable_ops.append(ptycho_recon)
+            ptycho_flush_ops.append(ptycho_accum)
+            ptycho_flush_ops.append(ptycho_recon)
 
         control_op = ControlOp(self,
-                               flushable_ops=flushable_ops,
+                               stxm_flush_ops=stxm_flush_ops,
+                               ptycho_flush_ops=ptycho_flush_ops,
                                publish_backend=publish_backend,
                                ptycho_accum=ptycho_accum,
                                ptycho_recon=ptycho_recon,
