@@ -188,7 +188,14 @@ class SinkAndPublishOp(Operator):
         self._written = False
         self._projection = 0
         self._proj_frame_count = 0
-
+    
+    def _publish_stxm_flush(self):
+        """Notify downstream consumers that the current STXM projection is done."""
+        if self.backend is None:
+            return
+        import numpy as np
+        self.backend.publish("stxm_flush", np.array([1]))
+    
     def compute(self, op_input, op_output, context):
         """Receive, publish, and save processed data using metadata."""
         # Initialize backend on first call
@@ -272,6 +279,10 @@ class SinkAndPublishOp(Operator):
             if self._proj_frame_count >= proj_no_frames:
                 if self.publish_folder is not None and series_id is not None:
                     self._write_projection_file(series_id, self._projection)
+                    
+                # Notify the visualizer / downstream consumers that the
+                # previous projection is complete and should be cleared.
+                self._publish_stxm_flush()
                 self._proj_frame_count -= proj_no_frames   # carry overshoot count
                 self._projection += 1
         else:
