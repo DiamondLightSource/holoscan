@@ -903,6 +903,7 @@ class PtychoReconstructionOp(Operator):
                     # been filling meanwhile). Resets _completed → resume next tick.
                     iter_done = self.current_iteration   # _flip_read resets it to 0
                     self._flip_read(scan_state)
+                    projection_advanced = True
                     self.logger.info(
                         "Projection %d/%d complete at iteration %d — flipped read "
                         "buffer to %d for next projection",
@@ -935,7 +936,9 @@ class PtychoReconstructionOp(Operator):
             n_filled,
             no_frames,
         )
-        self.current_iteration += 1
+
+        if not projection_advanced:
+            self.current_iteration += 1
 
     # ------------------------------------------------------------------
 
