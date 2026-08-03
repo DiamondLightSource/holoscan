@@ -8,7 +8,7 @@ image_src:
   #zmq_endpoint: "tcp://172.23.82.48:31001"  # Production endpoint
   zmq_endpoint: "tcp://172.23.82.77:5555"        # Local simulator
   receive_timeout_ms: 1000  # Increased timeout for testing
-  batch_size: 200         # Larger batch for testing
+  batch_size: 600         # Larger batch for testing
 
 decompress_op:
   # data_size: [192, 192]  # Match selun test data (192x192 images)
@@ -61,4 +61,4 @@ ptychography:
   post_stream_iterations: 1
   housekeeping_interval: 1
   publish_interval: 1
-  reset_probe: true   # false = carry previous scan's probe forward (warm start); true = full probe reset each scan
+  reset_probe: true  # false = carry previous scan's probe forward (warm start); true = full probe reset each scan
