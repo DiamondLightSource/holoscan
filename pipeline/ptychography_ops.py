@@ -879,6 +879,7 @@ class PtychoReconstructionOp(Operator):
         # are still arriving, which would flush GatherOp mid-compute (race) and
         # reset the object before the full scan is reconstructed. ControlOp
         # flushes on this signal (Task 3: flush after the last iteration).
+        projection_advanced = False
         if is_last and self.all_data_arrived and not self._completed:
             self._completed = True
             if num_projections > 1:
