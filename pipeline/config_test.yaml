@@ -5,8 +5,8 @@ scheduler:
   worker_threads: 4
 
 image_src:
-  #zmq_endpoint: "tcp://172.23.82.131:31001"  # Production endpoint
-  zmq_endpoint: "tcp://172.23.82.77:5555"        # Local simulator
+  zmq_endpoint: "tcp://172.23.82.131:31001"  # Production endpoint
+    #zmq_endpoint: "tcp://172.23.82.77:5555"        # Local simulator
   receive_timeout_ms: 1000  # Increased timeout for testing
   batch_size: 320         # Larger batch for testing
 
@@ -16,16 +16,16 @@ decompress_op:
   data_dtype: uint32
 
 position_src:
-  zmq_endpoint: "tcp://172.23.82.77:5556" # Local simulator
-  #zmq_endpoint: "tcp://172.23.82.204:6666" # production endpoint
+  #zmq_endpoint: "tcp://172.23.82.77:5556" # Local simulator
+  zmq_endpoint: "tcp://172.23.82.204:6666" # production endpoint
   receive_timeout_ms: 1000  # Increased timeout for testing
 
 header_src:
   # Dedicated ZMQ SUB socket for live scan-geometry headers (PR2). A JSON
   # object with npoints_h/npoints_v/step_size_h/step_size_v/num_projections
   # reconfigures scan geometry on the fly and preempts an in-flight recon.
-  zmq_endpoint: "tcp://172.23.82.77:5558" # Local simulator
-  #zmq_endpoint: "tcp://172.23.82.32:6667" # production endpoint (placeholder)
+  #zmq_endpoint: "tcp://172.23.82.77:5558" # Local simulator
+  zmq_endpoint: "tcp://172.23.82.32:6667" # production endpoint (placeholder)
   receive_timeout_ms: 100  # short so the blocking recv doesn't hold a worker thread
 
 masking_op:
