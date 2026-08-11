@@ -160,7 +160,7 @@ def configure_scan_geometry(
             f"Buffers are never reallocated at runtime (R-6)."
         )
 
-    # Scan extent in microns with 20% padding (same formula as PtyREX streaming)
+    # Scan extent in microns with 20% padding (same formula as PtyREX streaming) ## increased it on 11/09/26 to 100% padding for cases with position overshoots
     N = [
         ((npoints_v - 1) * step_size_v) * 2,
         ((npoints_h - 1) * step_size_h) * 2,

@@ -266,7 +266,8 @@ def build_combined_figure_reduced():
     for ax, cmap, key in ptycho_axes_info:
         im = ax.imshow(placeholder, cmap=cmap, interpolation='nearest', aspect='equal')
         ax.invert_xaxis()
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        #fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        fig.colorbar(im, ax=ax) #, fraction=0.046, pad=0.04)
         ptycho_ims[key] = im
 
     return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims
