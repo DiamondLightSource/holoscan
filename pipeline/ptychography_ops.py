@@ -398,13 +398,13 @@ class PtychoAccumulatorOp(Operator):
 
         # Auto-centre: capture scan centre from first batch
         if self.ptycho_state["scan_center_py"] is None:
+            scan_state = self.ptycho_state.get("scan_state") or {} 
             projection = int(scan_state.get("current_projection", 0))
             halfview = self.ptycho_state["N"][0]/2/2 * 1e-6 * pty_model.scan.scale[0]
             sign = 1 if projection % 2 == 0 else -1
             batch_size_here = py.shape[0]
             self.ptycho_state["scan_center_py"] = float(cp.mean(py)) + sign * halfview
             self.ptycho_state["scan_center_px"] = float(cp.mean(px[(batch_size_here//2):]))
-            scan_state = self.ptycho_state.get("scan_state") or {} 
             
             self.logger.info(
                 "Auto-centring projection %d: center_py=%.6e m, center_px=%.6e m "
