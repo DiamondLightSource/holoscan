@@ -758,17 +758,22 @@ class PtychoReconstructionOp(Operator):
         if self.current_iteration == 0:
             raw_cpu = cp.asnumpy(self.ptycho_state["raw_gpu"][r][:n_filled])
             dp = pty_data.dp
-            if pty_model.source.flux < 0:
-                pty_model.source.flux = float(np.sum(
-                    np.sum(raw_cpu, 0)[dp == 1]
-                ) / raw_cpu.shape[0])
-                self.logger.info("Computed flux = %.2f from %d frames", pty_model.source.flux, n_filled)
-            for trial_idx in range(pty_model.scan.tris_n):
-                pty_model.probe.array_states[:, :, :, :, trial_idx, :, :] = setPower(
-                    pty_model.probe.array_states[:, :, :, :, trial_idx, :, :],
-                    pty_model.source.flux,
-                )
-            self.logger.info("Probe power normalized to flux")
+            
+            if not pty_model.source.flux == -2:
+
+                if pty_model.source.flux < 0:
+                    pty_model.source.flux = float(np.sum(
+                        np.sum(raw_cpu, 0)[dp == 1]
+                    ) / raw_cpu.shape[0])
+                    self.logger.info("Computed flux = %.2f from %d frames", pty_model.source.flux, n_filled)
+            
+
+                for trial_idx in range(pty_model.scan.tris_n):
+                    pty_model.probe.array_states[:, :, :, :, trial_idx, :, :] = setPower(
+                        pty_model.probe.array_states[:, :, :, :, trial_idx, :, :],
+                        pty_model.source.flux,
+                  )
+                self.logger.info("Probe power normalized to flux")
 
         pty_params.current_iteration = cp.asarray(min(
             self.current_iteration, self.total_iterations - 1
