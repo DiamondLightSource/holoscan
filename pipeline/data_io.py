@@ -45,7 +45,7 @@ def receive_cbor_message(zmq_message) -> tuple[str, cbor2.CBORTag, int, dict]:
     if msg_type == "image":
         compressed_image, image_id, msg_content = msg["data"]["threshold_1"], msg["image_id"], None
     elif msg_type == "start":
-        print(f"{msg_type} message content: {msg}")
+        print(f"Received {msg_type} message.") # content: {msg}
         compressed_image, image_id, msg_content = None, None, msg
     elif msg_type == "end":
         print(f"{msg_type} message content: {msg}")

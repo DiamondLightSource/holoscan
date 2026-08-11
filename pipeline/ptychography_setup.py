@@ -162,8 +162,8 @@ def configure_scan_geometry(
 
     # Scan extent in microns with 20% padding (same formula as PtyREX streaming)
     N = [
-        ((npoints_v - 1) * step_size_v) * 1.2,
-        ((npoints_h - 1) * step_size_h) * 1.2,
+        ((npoints_v - 1) * step_size_v) * 2,
+        ((npoints_h - 1) * step_size_h) * 2,
     ]
     logger.info(
         "Configuring scan: %d x %d points, step %.3f x %.3f µm → "
