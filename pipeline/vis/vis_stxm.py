@@ -350,7 +350,7 @@ if __name__ == "__main__":
     threading.Thread(target=receive_stxm_data, args=(sub_backend,), daemon=True).start()
     threading.Thread(target=receive_ptycho_data, args=(sub_backend,), daemon=True).start()
 
-    reduced_flag = True
+    reduced_flag = False
 
     if reduced_flag:
         fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure_reduced()

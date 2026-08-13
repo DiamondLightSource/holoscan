@@ -19,6 +19,13 @@ import zmq
 from holoscan.core import Operator, OperatorSpec, IOSpec, ConditionType
 
 
+def _format_energy_tag(energy_keV):
+    """Return a filesystem-safe energy tag, e.g. E10p500keV."""
+    if energy_keV is None:
+        return None
+    return f"E{float(energy_keV):.3f}".replace(".", "p") + "keV"
+
+
 class PublishBackend:
     """Base class for publishing backends."""
     
@@ -157,11 +164,28 @@ class SinkAndPublishOp(Operator):
             return
         os.makedirs(self.publish_folder, exist_ok=True)
         data = np.concatenate(self.scan_buffer, axis=0)
-        filepath = os.path.join(self.publish_folder, f"{series_id}_proj{projection:02d}.h5")
+        scan_state = self.scan_state or {}
+        energy_steps = scan_state.get("energy_steps_keV")
+        energy_keV = None
+        if energy_steps is not None and 0 <= projection < len(energy_steps):
+            energy_keV = float(energy_steps[projection])
+        elif scan_state.get("current_energy_keV") is not None:
+            energy_keV = float(scan_state.get("current_energy_keV"))
+        energy_tag = _format_energy_tag(energy_keV)
+        basename = f"{series_id}_proj{projection:02d}"
+        if energy_tag is not None:
+            basename = f"{basename}_{energy_tag}"
+        filepath = os.path.join(self.publish_folder, f"{basename}.h5")
         with h5py.File(filepath, 'w') as f:
             f.create_dataset('stxm', data=data)
             f.attrs['projection'] = projection
             f.attrs['series_id'] = str(series_id)
+            if energy_keV is not None:
+                f.attrs['energy_keV'] = float(energy_keV)
+                f.attrs['energy_eV'] = float(energy_keV * 1e3)
+            f.attrs['n_energy_steps'] = int(
+                scan_state.get('n_energy_steps', scan_state.get('num_projections', 1))
+            )
         self.logger.info(f"Wrote projection {projection} ({data.shape[0]} frames) to {filepath}")
         self._written = True
         self.scan_buffer = []

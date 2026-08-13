@@ -172,6 +172,20 @@ def configure_scan_geometry(
         N[1], N[0], no_frames, capacity,
     )
 
+    # If an energy scan schedule is present, seed projection 0 energy BEFORE
+    # before_reconstruction_stream so all energy-dependent setup (wav, dx,
+    # geometry, probe init) is built for the correct starting energy.
+    scan_state = ptycho_state.get("scan_state") or {}
+    energy_steps = scan_state.get("energy_steps_keV")
+    if energy_steps:
+        start_energy_keV = float(energy_steps[0])
+        pty_model.source.energy = np.array([start_energy_keV * 1e3], dtype=np.float64)
+        scan_state["current_energy_keV"] = start_energy_keV
+        logger.info(
+            "Applying initial energy step before geometry setup: %.6f keV",
+            start_energy_keV,
+        )
+
     # ── Initialise scan arrays (mirrors pre_process_reconstruct_stream) ─
     pty_data.raw = np.zeros((no_frames, H, W), dtype=np.uint32)
 

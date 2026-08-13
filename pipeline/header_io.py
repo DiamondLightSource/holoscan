@@ -8,7 +8,8 @@ A header is a JSON object, e.g.::
 
     {"npoints_h": 100, "npoints_v": 100,
      "step_size_h": 0.25, "step_size_v": 0.25,
-     "num_projections": 1}
+    "start_energy_keV": 10.0, "energy_range_keV": 2.0,
+    "n_energy_steps": 5}
 
 On a valid header the operator:
   1. updates the always-present shared ``scan_state`` (projection count),
@@ -83,18 +84,54 @@ class HeaderRxOp(Operator):
             npoints_v = int(msg["npoints_v"])
             step_size_h = float(msg["step_size_h"])
             step_size_v = float(msg["step_size_v"])
-            num_projections = int(msg.get("num_projections", 1))
+            start_energy_keV = float(
+                msg.get("start_energy_keV", msg.get("start_energy"))
+            )
+            energy_range_keV = float(
+                msg.get("energy_range_keV", msg.get("energy_range"))
+            )
+            n_energy_steps = int(
+                msg.get("n_energy_steps", msg.get("energy_steps"))
+            )
         except (KeyError, TypeError, ValueError) as exc:
             self.logger.warning("Malformed header %r: %s", msg, exc)
             return None
         if (
             npoints_h <= 0 or npoints_v <= 0
             or step_size_h <= 0 or step_size_v <= 0
-            or num_projections < 1
+            or start_energy_keV <= 0
+            or energy_range_keV < 0
+            or n_energy_steps < 1
         ):
             self.logger.warning("Header has non-positive values: %r", msg)
             return None
-        return npoints_h, npoints_v, step_size_h, step_size_v, num_projections
+        if n_energy_steps > 1 and energy_range_keV <= 0:
+            self.logger.warning(
+                "Header has n_energy_steps=%d but non-positive energy_range_keV=%.6g: %r",
+                n_energy_steps,
+                energy_range_keV,
+                msg,
+            )
+            return None
+
+        if n_energy_steps == 1:
+            energy_steps_keV = [start_energy_keV]
+        else:
+            step_keV = energy_range_keV / float(n_energy_steps - 1)
+            energy_steps_keV = [
+                start_energy_keV + i * step_keV for i in range(n_energy_steps)
+            ]
+
+        return (
+            npoints_h,
+            npoints_v,
+            step_size_h,
+            step_size_v,
+            n_energy_steps,
+            start_energy_keV,
+            energy_range_keV,
+            energy_steps_keV,
+        )
 
     def compute(self, op_input, op_output, context):
         try:
@@ -109,11 +146,26 @@ class HeaderRxOp(Operator):
         if parsed is None:
             return  # malformed — ignore, leave any in-flight scan untouched
 
-        npoints_h, npoints_v, step_size_h, step_size_v, num_projections = parsed
+        (
+            npoints_h,
+            npoints_v,
+            step_size_h,
+            step_size_v,
+            n_energy_steps,
+            start_energy_keV,
+            energy_range_keV,
+            energy_steps_keV,
+        ) = parsed
         self.logger.info(
             "Received header: %d x %d points, step %.4g x %.4g µm, "
-            "num_projections=%d",
-            npoints_h, npoints_v, step_size_h, step_size_v, num_projections,
+            "start_energy_keV=%.6g, energy_range_keV=%.6g, n_energy_steps=%d",
+            npoints_h,
+            npoints_v,
+            step_size_h,
+            step_size_v,
+            start_energy_keV,
+            energy_range_keV,
+            n_energy_steps,
         )
 
         # Reject a grid that exceeds the pre-allocated GPU capacity BEFORE staging
@@ -140,13 +192,20 @@ class HeaderRxOp(Operator):
             blocked_event = self.scan_state.get("transition_blocked_event")
             if blocked_event is not None:
                 prev_blocked = blocked_event.is_set()
-            self.scan_state["num_projections"] = num_projections
+            self.scan_state["num_projections"] = n_energy_steps
             self.scan_state["current_projection"] = 0
             self.scan_state["no_frames"] = npoints_h * npoints_v
+            self.scan_state["energy_steps_keV"] = [float(x) for x in energy_steps_keV]
+            self.scan_state["current_energy_keV"] = float(energy_steps_keV[0])
+            self.scan_state["start_energy_keV"] = float(start_energy_keV)
+            self.scan_state["energy_range_keV"] = float(energy_range_keV)
+            self.scan_state["n_energy_steps"] = int(n_energy_steps)
             self.logger.info(
-                "Header accepted: no_frames=%d num_projections=%d (prev_phase=%s, prev_blocked=%s)",
+                "Header accepted: no_frames=%d n_energy_steps=%d start_energy_keV=%.6g "
+                "(prev_phase=%s, prev_blocked=%s)",
                 self.scan_state["no_frames"],
                 self.scan_state["num_projections"],
+                self.scan_state["current_energy_keV"],
                 prev_phase,
                 prev_blocked,
             )

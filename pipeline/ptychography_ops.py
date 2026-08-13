@@ -40,6 +40,13 @@ _USE_PROFILING_UPDATE = _CAPTURE_GRAPH or bool(
 )
 
 
+def _format_energy_tag(energy_keV):
+    """Return a filesystem-safe energy tag, e.g. E10p500keV."""
+    if energy_keV is None:
+        return None
+    return f"E{float(energy_keV):.3f}".replace(".", "p") + "keV"
+
+
 def _ack_flush_and_maybe_release(scan_state, ack_key, logger):
     """Mark one ptycho flush-execution ack and release the transition barrier
     only when both ptycho acks are present in waiting_flush_exec."""
@@ -401,7 +408,10 @@ class PtychoAccumulatorOp(Operator):
             scan_state = self.ptycho_state.get("scan_state") or {} 
             projection = int(scan_state.get("current_projection", 0))
             halfview = self.ptycho_state["N"][0]/2/2 * 1e-6 * pty_model.scan.scale[0]
-            sign = 1 if projection % 2 == 0 else -1
+            # Tomography alternates sign between projections; energy scans keep
+            # the same sample orientation and should not alternate.
+            is_energy_scan = scan_state.get("energy_steps_keV") is not None
+            sign = 1 if (is_energy_scan or projection % 2 == 0) else -1
             batch_size_here = py.shape[0]
             self.ptycho_state["scan_center_py"] = float(cp.mean(py)) + sign * halfview
             self.ptycho_state["scan_center_px"] = float(cp.mean(px[(batch_size_here//2):]))
@@ -494,6 +504,88 @@ class PtychoReconstructionOp(Operator):
         the next compute() (deferred, so it never races the PIE update)."""
         self._flush_requested = True
 
+    def _apply_energy_step(self):
+        """Apply per-step energy and dependent geometry for energy scans.
+
+        The energy schedule is expected in ``scan_state['energy_steps_keV']`` and
+        indexed by ``current_projection``. If no schedule is present, this is a
+        no-op so tomography behavior remains unchanged.
+        """
+        scan_state = self.ptycho_state.get("scan_state") or {}
+        energy_steps = scan_state.get("energy_steps_keV")
+        if energy_steps is None:
+            return None
+
+        proj = int(scan_state.get("current_projection", 0))
+        if proj < 0 or proj >= len(energy_steps):
+            self.logger.warning(
+                "Energy-step index out of range: projection=%d len=%d (keeping previous energy)",
+                proj,
+                len(energy_steps),
+            )
+            return None
+
+        energy_keV = float(energy_steps[proj])
+        energy_eV = energy_keV * 1e3
+        if energy_eV <= 0:
+            self.logger.warning(
+                "Invalid energy %.6g keV for projection %d (keeping previous energy)",
+                energy_keV,
+                proj,
+            )
+            return None
+
+        pty_model = self.ptycho_state["pty_model"]
+        pty_params = self.ptycho_state["pty_params"]
+
+        # Update source energy/wavelength with the same shape conventions used by
+        # PtyREX setup (single energy mode for each scan step).
+        planck = 6.62607015e-34
+        lightspeed = 2.99792458e8
+        e_charge = 1.602176634e-19
+        wavelength_m = (planck * lightspeed) / (energy_eV * e_charge)
+        pty_model.source.energy = np.array([energy_eV], dtype=np.float64)
+        pty_model.source.wav = np.array([[wavelength_m]], dtype=np.float64)
+        pty_params.n_modes_e = int(np.size(pty_model.source.energy[:]))
+        pty_params.upsample[2] = int(pty_model.source.n_upsample_energy)
+
+        # Recompute specimen-plane pixel pitch from updated wavelength.
+        dt = pty_model.detector.pixel_pitch / pty_model.detector.dist
+        t = (dt * pty_params.ar_sz)[np.newaxis, :]
+        if pty_model.geometry.modality == "far-field":
+            pty_params.dx = pty_model.source.wav * (1.0 / t)
+        elif pty_model.geometry.modality == "near-field":
+            pty_params.dx = np.repeat(
+                pty_model.detector.pixel_pitch[np.newaxis, ...],
+                pty_model.source.states_e,
+                axis=0,
+            )
+            pty_params.du = pty_params.dx.copy()
+
+        if getattr(pty_params, "slices", 1) > 1 and hasattr(pty_params, "sliceProp"):
+            from ptyrex.reconstruct.utils.numpy import GenMultiSlicePropAngular
+
+            slice_shape = np.shape(pty_params.sliceProp)
+            pty_params.sliceProp = GenMultiSlicePropAngular(
+                np.ones(slice_shape),
+                pty_params.s_distance,
+                pty_params.dx,
+                pty_model.source.wav,
+            )
+
+        pty_model.geometry.object_pixel_pitch = pty_params.dx
+        pty_model.geometry.detector_pixel_pitch = pty_model.detector.pixel_pitch
+        pty_model.geometry.object_detector_distance = pty_model.detector.dist
+        pty_model.geometry.beam_wavelength = pty_model.source.wav
+        pty_model.geometry.beam_energy = pty_model.source.energy
+
+        # Ensure subsequent kernels/propagation use updated host-side geometry.
+        if self.initialized_gpu:
+            to_device(pty_model, pty_params)
+
+        scan_state["current_energy_keV"] = energy_keV
+        return energy_keV
+
     def _perform_advance(self):
         """Per-projection reset: fresh object + iteration counters for the next
         projection, probe carried over (warm start). Does NOT touch the buffers —
@@ -511,7 +603,16 @@ class PtychoReconstructionOp(Operator):
             if self.reset_probe:
                 pty_model.probe.array_states[:] = self._probe_initial
                 pty_model.source.flux = self._flux_initial
-        self.logger.info("Recon advanced to next projection (object reset, probe carried)")
+        energy_keV = self._apply_energy_step()
+        if energy_keV is None:
+            self.logger.info(
+                "Recon advanced to next projection (object reset, probe carried)"
+            )
+        else:
+            self.logger.info(
+                "Recon advanced to next projection (object reset, energy=%.6f keV)",
+                energy_keV,
+            )
 
     def _flip_read(self, scan_state):
         """PR4: finished the current read buffer — release it back to the
@@ -955,14 +1056,26 @@ class PtychoReconstructionOp(Operator):
         scan_state = self.ptycho_state.get("scan_state") or {}
         series_id = scan_state.get("series_id", "unknown")
         proj = int(scan_state.get("current_projection", 0))
+        energy_steps = scan_state.get("energy_steps_keV")
+        energy_keV = None
+        if energy_steps is not None and 0 <= proj < len(energy_steps):
+            energy_keV = float(energy_steps[proj])
+        else:
+            current_energy = scan_state.get("current_energy_keV")
+            if current_energy is not None:
+                energy_keV = float(current_energy)
+        energy_tag = _format_energy_tag(energy_keV)
         pty_model = self.ptycho_state["pty_model"]
         obj_2d = np.squeeze(cp.asnumpy(pty_model.obj.array_global))
         probe_2d = np.squeeze(cp.asnumpy(pty_model.probe.array_states))
         import h5py
         try:
             os.makedirs(self.publish_folder, exist_ok=True)
+            basename = f"{series_id}_proj{proj:02d}_recon"
+            if energy_tag is not None:
+                basename = f"{basename}_{energy_tag}"
             path = os.path.join(
-                self.publish_folder, f"{series_id}_proj{proj:02d}_recon.h5"
+                self.publish_folder, f"{basename}.h5"
             )
             with h5py.File(path, "w") as f:
                 f.create_dataset("object_phase", data=np.angle(obj_2d).astype(np.float32))
@@ -972,6 +1085,10 @@ class PtychoReconstructionOp(Operator):
                 f.attrs["projection"] = proj
                 f.attrs["series_id"] = str(series_id)
                 f.attrs["iteration"] = int(self.current_iteration)
+                if energy_keV is not None:
+                    f.attrs["energy_keV"] = float(energy_keV)
+                    f.attrs["energy_eV"] = float(energy_keV * 1e3)
+                f.attrs["n_energy_steps"] = int(scan_state.get("n_energy_steps", scan_state.get("num_projections", 1)))
             self.logger.info("Saved projection recon → %s", path)
         except Exception:
             self.logger.exception("Failed to save projection recon file")
