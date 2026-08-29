@@ -225,15 +225,49 @@ def build_combined_figure():
 
     placeholder = np.zeros((64, 64)) * np.nan
     ptycho_axes_info = [
-        (ax_obj_phase,  "twilight", "object_phase"),
+        (ax_obj_phase,  "gray", "object_phase"),
         (ax_obj_amp,    "gray",     "object_amp"),
-        (ax_prb_phase,  "twilight", "probe_phase"),
+        (ax_prb_phase,  "gray", "probe_phase"),
         (ax_prb_amp,    "gray",     "probe_amp"),
     ]
     ptycho_ims = {}
     for ax, cmap, key in ptycho_axes_info:
         im = ax.imshow(placeholder, cmap=cmap, interpolation='nearest', aspect='equal')
+        ax.invert_xaxis()
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ptycho_ims[key] = im
+
+    return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims
+
+def build_combined_figure_reduced():
+    """2-row x 2-col layout: STXM top, ptycho object phase + probe modulus bottom."""
+    plt.style.use('dark_background')
+    matplotlib.rcParams.update({'font.size': 8})
+
+    fig = plt.figure(figsize=(10, 10))
+    gs = fig.add_gridspec(2, 2, hspace=0.35, wspace=0.3)
+
+    ax_stxm_outer = fig.add_subplot(gs[0, 0])
+    ax_stxm_inner = fig.add_subplot(gs[0, 1])
+    ax_obj_phase  = fig.add_subplot(gs[1, 0])
+    ax_prb_amp    = fig.add_subplot(gs[1, 1])
+
+    ax_stxm_outer.set_title("STXM Outer")
+    ax_stxm_inner.set_title("STXM Inner")
+    ax_obj_phase.set_title("Object Phase")
+    ax_prb_amp.set_title("Probe Amplitude")
+
+    placeholder = np.zeros((64, 64)) * np.nan
+    ptycho_axes_info = [
+        (ax_obj_phase,  "gray", "object_phase"),
+        (ax_prb_amp,    "gray",     "probe_amp"),
+    ]
+    ptycho_ims = {}
+    for ax, cmap, key in ptycho_axes_info:
+        im = ax.imshow(placeholder, cmap=cmap, interpolation='nearest', aspect='equal')
+        ax.invert_xaxis()
+        #fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        fig.colorbar(im, ax=ax) #, fraction=0.046, pad=0.04)
         ptycho_ims[key] = im
 
     return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims
@@ -316,7 +350,12 @@ if __name__ == "__main__":
     threading.Thread(target=receive_stxm_data, args=(sub_backend,), daemon=True).start()
     threading.Thread(target=receive_ptycho_data, args=(sub_backend,), daemon=True).start()
 
-    fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure()
+    reduced_flag = True
+
+    if reduced_flag:
+        fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure_reduced()
+    else:
+        fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure()
 
     if all(v is not None for v in (args.xmin, args.xmax, args.ymin, args.ymax)):
         ax_stxm_outer.set_xlim(-args.xmax, -args.xmin)

@@ -14,6 +14,7 @@ This separates I/O operations (data_io) from computation (processing).
 """
 
 import logging
+import threading
 from argparse import ArgumentParser
 
 from holoscan.core import Application
@@ -28,8 +29,9 @@ from data_io import (
     GatherOp
 )
 from processing import MaskingOp
-from publish import SinkAndPublishOp, PublishToCloudOp
+from publish import SinkAndPublishOp
 from control import ControlOp
+from header_io import HeaderRxOp
 
 # Try to import NATS (optional for testing)
 try:
@@ -58,6 +60,20 @@ class StxmApp(Application):
         self.num_decompress_ops = 4
         self.ptychography_enabled = False
         self.ptycho_state = None
+        # Always-present shared holder (S11) for projection/frame counts, written
+        # by the header op and read by both the STXM and ptycho paths. Populated
+        # in main(); the frame count is filled in by configure_scan_geometry.
+        self.scan_state = {
+            "no_frames": 0,
+            "num_projections": 1,
+            "current_projection": 0,
+            "transition_blocked_event": threading.Event(),
+            "transition_phase": "idle",
+            "ptycho_accum_flushed": False,
+            "ptycho_recon_flushed": False,
+            "transition_error": None,
+            "max_blocked_frames": None,
+        }
         super().__init__(*args, **kwargs)
         self.enable_metadata(True)
 
@@ -130,20 +146,15 @@ class StxmApp(Application):
         sink_and_publish_op = SinkAndPublishOp(self,
                                                tensor2subject=tensor2subject,
                                                publish_backend=publish_backend,
+                                               scan_state=self.scan_state,
                                                **self.kwargs('sink_and_publish_op'),
                                                name="sink_and_publish_op")
 
-        # ===== Cloud Publishing Operator =====
-        publish_folder = self.kwargs('sink_and_publish_op')['publish_folder']
-        temp_folder = self.kwargs('sink_and_publish_op')['temp_folder']
-
-        publish_to_cloud_op = PublishToCloudOp(self,
-                                               publish_folder=publish_folder,
-                                               temp_folder=temp_folder,
-                                               name="publish_to_cloud_op")
-
         # ===== Control Operator =====
-        flushable_ops = [gather_op, position_src, sink_and_publish_op]
+        stxm_flush_ops = [gather_op, position_src, sink_and_publish_op]
+        ptycho_flush_ops = []
+        ptycho_accum = None   # set below when ptychography is enabled
+        ptycho_recon = None
 
         # ===== Ptychography Branch (conditional) =====
         if self.ptychography_enabled:
@@ -170,6 +181,7 @@ class StxmApp(Application):
                 housekeeping_interval=ptycho_cfg["housekeeping_interval"],
                 publish_interval=ptycho_cfg["publish_interval"],
                 reset_probe=ptycho_cfg.get("reset_probe", False),
+                publish_folder=sink_config.get("publish_folder"),
                 name="ptycho_reconstruction",
             )
 
@@ -179,13 +191,31 @@ class StxmApp(Application):
                 name="ptycho_publish",
             )
 
-            flushable_ops.append(ptycho_accum)
-            flushable_ops.append(ptycho_recon)
+            ptycho_flush_ops.append(ptycho_accum)
+            ptycho_flush_ops.append(ptycho_recon)
 
         control_op = ControlOp(self,
-                               flushable_ops=flushable_ops,
+                               stxm_flush_ops=stxm_flush_ops,
+                               ptycho_flush_ops=ptycho_flush_ops,
                                publish_backend=publish_backend,
+                               ptycho_accum=ptycho_accum,
+                               ptycho_recon=ptycho_recon,
+                               scan_state=self.scan_state,
                                name="control_op")
+
+        # ===== Header Source (live scan geometry, optional) =====
+        # A dedicated ZMQ SUB socket for JSON scan-geometry headers. Reconfigures
+        # geometry on the fly and preempts an in-flight recon (R-4 handshake).
+        header_src = None
+        header_cfg = self.kwargs('header_src')
+        if header_cfg:
+            header_src = HeaderRxOp(self,
+                                    name="header_src",
+                                    scan_state=self.scan_state,
+                                    ptycho_state=self.ptycho_state,
+                                    **header_cfg)
+        else:
+            logger.warning("No header_src config — live scan headers disabled")
 
         # ===== Connect Operators =====
         # I/O: Image reception and decompression -> gather
@@ -204,11 +234,17 @@ class StxmApp(Application):
         if self.ptychography_enabled:
             self.add_flow(gather_op, ptycho_accum, {("output", "input")})
             self.add_flow(ptycho_recon, ptycho_publish, {("output", "input")})
+            # Completion signal → control (logged in PR1; drives flush in PR3)
+            self.add_flow(ptycho_recon, control_op, {("complete", "input")})
 
-        # Control path: flush and completion signals
+        # Control path: flush signal (start message → unconditional idempotent flush)
         self.add_flow(img_src, control_op, {("flush", "input")})
-        self.add_flow(sink_and_publish_op, control_op, {("processing_end", "input")})
-        self.add_flow(control_op, publish_to_cloud_op, {("output", "trigger")})
+
+        # Header path: live geometry header → control (flush for new dataset).
+        # The ptycho geometry reconfigure is driven separately via the R-4
+        # handshake in ptycho_state (header op sets preempt_requested).
+        if header_src is not None:
+            self.add_flow(header_src, control_op, {("header", "input")})
 
 
 def main():
@@ -231,21 +267,30 @@ def main():
     # Load config to make kwargs available
     app.config(args.config)
 
+    image_src_config = app.kwargs('image_src')
+
     # Get scheduler parameters from config via kwargs
     scheduler_config = app.kwargs('scheduler')
     num_decompress_ops = scheduler_config.get('num_decompress_ops', 4)
     worker_threads = scheduler_config.get('worker_threads', 6)
 
+    ptycho_cfg = app.kwargs("ptychography")
+    default_blocked_frames = int(image_src_config.get("batch_size", 100)) * 10
+    app.scan_state["max_blocked_frames"] = int(
+        ptycho_cfg.get("max_blocked_frames", default_blocked_frames)
+    ) if ptycho_cfg else default_blocked_frames
+
     # Set num_decompress_ops - will be used in compose() when run() is called
     app.num_decompress_ops = num_decompress_ops
 
     # Ptychography setup (before compose)
-    ptycho_cfg = app.kwargs("ptychography")
     if ptycho_cfg and ptycho_cfg.get("enabled", False):
         from ptychography_setup import init_ptycho_state
 
         logger.info("Initialising ptychography state…")
-        app.ptycho_state = init_ptycho_state(ptycho_cfg)
+        # Pass the shared scan_state so configure_scan_geometry can mirror the
+        # frame count for the STXM path and header op (S11).
+        app.ptycho_state = init_ptycho_state(ptycho_cfg, app.scan_state)
         app.ptychography_enabled = True
         worker_threads = max(worker_threads, 8)
         logger.info("Ptychography enabled (worker_threads=%d)", worker_threads)
