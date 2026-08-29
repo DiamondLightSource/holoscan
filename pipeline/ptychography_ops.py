@@ -983,6 +983,11 @@ class PtychoReconstructionOp(Operator):
                 "probe_amp": np.abs(probe_2d).astype(np.float32),
                 "iteration": self.current_iteration,
             }
+            if is_last:
+                # Energy-scan summary point, emitted once per projection (not per tick).
+                out["object_amp_mean"] = float(np.mean(np.abs(obj_2d)))
+                out["object_phase_mean"] = float(np.mean(np.angle(obj_2d)))
+                out["projection"] = int(scan_state.get("current_projection", 0))
             op_output.emit(out, "output")
 
         # Completion signal — emitted once, only when the scan is GENUINELY
@@ -1171,6 +1176,17 @@ class PtychoPublishOp(Operator):
             if tensor_key in data:
                 tensor = np.asarray(data[tensor_key])
                 self.backend.publish(subject, tensor)
+
+        # Per-projection energy-scan summary, only present on the projection's
+        # final publish (see PtychoReconstructionOp). Packed as [projection, mean].
+        if "object_amp_mean" in data:
+            proj = data.get("projection", 0)
+            self.backend.publish(
+                "ptycho_object_amp_mean", np.array([proj, data["object_amp_mean"]])
+            )
+            self.backend.publish(
+                "ptycho_object_phase_mean", np.array([proj, data["object_phase_mean"]])
+            )
 
         iteration = data.get("iteration", "?")
         self.logger.debug("Published ptychography results at iteration %s", iteration)

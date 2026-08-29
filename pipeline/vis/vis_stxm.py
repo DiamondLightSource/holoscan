@@ -90,6 +90,7 @@ STXM_SUBJECTS = (
 PTYCHO_SUBJECTS = (
     "ptycho_object_phase", "ptycho_object_amp",
     "ptycho_probe_phase", "ptycho_probe_amp", "ptycho_flush",
+    "ptycho_object_amp_mean", "ptycho_object_phase_mean",
 )
 
 
@@ -157,7 +158,10 @@ ptycho_dict = {
     "probe_phase": None,
     "probe_amp": None,
 }
-
+energy_amp_idx = []
+energy_amp_signal = []
+energy_phase_idx = []
+energy_phase_signal = []
 
 def receive_ptycho_data(sub_backend):
     global ptycho_dict
@@ -176,6 +180,20 @@ def receive_ptycho_data(sub_backend):
                 ptycho_dict[key] = arr
             except Empty:
                 pass
+
+        # Per-projection energy-scan summary points, published once per projection.
+        try:
+            proj, mean_amp = sub_backend.get_queue("ptycho_object_amp_mean").get(block=False)
+            energy_amp_idx.append(proj)
+            energy_amp_signal.append(mean_amp)
+        except Empty:
+            pass
+        try:
+            proj, mean_phase = sub_backend.get_queue("ptycho_object_phase_mean").get(block=False)
+            energy_phase_idx.append(proj)
+            energy_phase_signal.append(mean_phase)
+        except Empty:
+            pass
 
         try:
             sub_backend.get_queue("ptycho_flush").get(block=False)
@@ -272,15 +290,60 @@ def build_combined_figure_reduced():
 
     return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims
 
+def build_combined_figure_energy():
+    """2-row x 2-col layout: STXM top, ptycho object amp + probe modulus bottom.,
+    with energy scan plot below."""
+
+    plt.style.use('dark_background')
+    matplotlib.rcParams.update({'font.size': 8})
+
+    fig = plt.figure(figsize=(10, 10))
+    gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.3)
+
+    ax_stxm_outer = fig.add_subplot(gs[0, 0])
+    ax_stxm_inner = fig.add_subplot(gs[0, 1])
+    ax_obj_amp  = fig.add_subplot(gs[1, 0])
+    ax_prb_amp    = fig.add_subplot(gs[1, 1])
+    ax_energy     = fig.add_subplot(gs[2, :])
+
+    ax_stxm_outer.set_title("STXM Outer")
+    ax_stxm_inner.set_title("STXM Inner")
+    ax_obj_amp.set_title("Object Amplitude")
+    ax_prb_amp.set_title("Probe Amplitude")
+    ax_energy.set_title("Energy Scan")
+    ax_energy.set_xlabel("Projection")
+    ax_energy.set_ylabel("Mean")
+
+    energy_line_amp, = ax_energy.plot([], [], 'o-', color='cyan', label="Object Amplitude")
+    energy_line_phase, = ax_energy.plot([], [], 'o-', color='magenta', label="Object Phase")
+    ax_energy.legend(loc='upper right', fontsize=7)
+
+    placeholder = np.zeros((64, 64)) * np.nan
+    ptycho_axes_info = [
+        (ax_obj_amp,  "gray", "object_amp"),
+        (ax_prb_amp,    "gray",     "probe_amp"),
+    ]
+    ptycho_ims = {}
+    for ax, cmap, key in ptycho_axes_info:
+        im = ax.imshow(placeholder, cmap=cmap, interpolation='nearest', aspect='equal')
+        ax.invert_xaxis()
+        #fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        fig.colorbar(im, ax=ax) #, fraction=0.046, pad=0.04)
+        ptycho_ims[key] = im
+
+    return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp, energy_line_phase
+
 
 # ===================== Combined animation =====================
 
 _stxm_n_prev = 0
 
 
+
 def animate_combined(i):
     global stxm_dict, ptycho_dict, _stxm_n_prev
-    global ax_stxm_outer, ax_stxm_inner, ptycho_ims, reset_limits, plot_batch
+    global ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp, energy_line_phase, reset_limits, plot_batch
+    global energy_amp_idx, energy_amp_signal, energy_phase_idx, energy_phase_signal
 
     # ---- STXM panels ----
     fields = ("inner", "outer", "positions", "position_ids", "intensity_ids")
@@ -311,10 +374,17 @@ def animate_combined(i):
     # ---- Ptycho panels ----
     for key, im in ptycho_ims.items():
         arr = ptycho_dict[key]
+
         if arr is not None and arr.ndim >= 2:
             im.set_data(arr)
             im.set_clim(vmin=np.nanpercentile(arr, 2),
                         vmax=np.nanpercentile(arr, 98))
+
+    if energy_amp_idx or energy_phase_idx:
+        energy_line_amp.set_data(energy_amp_idx, energy_amp_signal)
+        energy_line_phase.set_data(energy_phase_idx, energy_phase_signal)
+        ax_energy.relim()
+        ax_energy.autoscale_view()
 
 
 # ===================== Main =====================
@@ -350,10 +420,12 @@ if __name__ == "__main__":
     threading.Thread(target=receive_stxm_data, args=(sub_backend,), daemon=True).start()
     threading.Thread(target=receive_ptycho_data, args=(sub_backend,), daemon=True).start()
 
-    reduced_flag = True
+    flag = "energy" # reduced, normal, energy
 
-    if reduced_flag:
+    if flag=='reduced':
         fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure_reduced()
+    elif flag=='energy':
+        fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp, energy_line_phase = build_combined_figure_energy()
     else:
         fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure()
 
