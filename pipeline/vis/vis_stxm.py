@@ -315,7 +315,7 @@ def build_combined_figure_energy():
     ax_energy.set_ylabel("Mean")
 
     energy_line_amp, = ax_energy.plot([], [], 'o-', color='cyan', label="Object Amplitude")
-    energy_line_phase, = ax_energy.plot([], [], 'o-', color='magenta', label="Object Phase")
+    # energy_line_phase, = ax_energy.plot([], [], 'o-', color='magenta', label="Object Phase")
     ax_energy.legend(loc='upper right', fontsize=7)
 
     placeholder = np.zeros((64, 64)) * np.nan
@@ -331,7 +331,7 @@ def build_combined_figure_energy():
         fig.colorbar(im, ax=ax) #, fraction=0.046, pad=0.04)
         ptycho_ims[key] = im
 
-    return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp, energy_line_phase
+    return fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp#, energy_line_phase
 
 
 # ===================== Combined animation =====================
@@ -342,7 +342,7 @@ _stxm_n_prev = 0
 
 def animate_combined(i):
     global stxm_dict, ptycho_dict, _stxm_n_prev
-    global ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp, energy_line_phase, reset_limits, plot_batch
+    global ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp, reset_limits, plot_batch #energy_line_phase
     global energy_amp_idx, energy_amp_signal, energy_phase_idx, energy_phase_signal
 
     # ---- STXM panels ----
@@ -380,9 +380,9 @@ def animate_combined(i):
             im.set_clim(vmin=np.nanpercentile(arr, 2),
                         vmax=np.nanpercentile(arr, 98))
 
-    if energy_amp_idx or energy_phase_idx:
+    if energy_amp_idx: # or energy_phase_idx:
         energy_line_amp.set_data(energy_amp_idx, energy_amp_signal)
-        energy_line_phase.set_data(energy_phase_idx, energy_phase_signal)
+        # energy_line_phase.set_data(energy_phase_idx, energy_phase_signal)
         ax_energy.relim()
         ax_energy.autoscale_view()
 

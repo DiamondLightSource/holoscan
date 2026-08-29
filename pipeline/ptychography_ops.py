@@ -985,8 +985,8 @@ class PtychoReconstructionOp(Operator):
             }
             if is_last:
                 # Energy-scan summary point, emitted once per projection (not per tick).
-                out["object_amp_mean"] = float(np.mean(np.abs(obj_2d)))
-                out["object_phase_mean"] = float(np.mean(np.angle(obj_2d)))
+                out["object_amp_mean"] = float(np.mean(np.abs(obj_2d[obj_2d.shape[0]//2-200:obj_2d.shape[0]//2+200, obj_2d.shape[1]//2-200:obj_2d.shape[1]//2+200])))
+                out["object_phase_mean"] = float(np.mean(np.angle(obj_2d[obj_2d.shape[0]//2-200:obj_2d.shape[0]//2+200, obj_2d.shape[1]//2-200:obj_2d.shape[1]//2+200])))
                 out["projection"] = int(scan_state.get("current_projection", 0))
             op_output.emit(out, "output")
 
