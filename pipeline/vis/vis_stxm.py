@@ -377,8 +377,8 @@ def animate_combined(i):
 
         if arr is not None and arr.ndim >= 2:
             im.set_data(arr)
-            im.set_clim(vmin=np.nanpercentile(arr, 2),
-                        vmax=np.nanpercentile(arr, 98))
+            im.set_clim(vmin=0.15, #np.nanpercentile(arr, 2),
+                        vmax=1.65 )#np.nanpercentile(arr, 98))
 
     if energy_amp_idx: # or energy_phase_idx:
         energy_line_amp.set_data(energy_amp_idx, energy_amp_signal)
@@ -425,7 +425,7 @@ if __name__ == "__main__":
     if flag=='reduced':
         fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure_reduced()
     elif flag=='energy':
-        fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp, energy_line_phase = build_combined_figure_energy()
+        fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims, ax_energy, energy_line_amp = build_combined_figure_energy() #energy_line_phase
     else:
         fig, ax_stxm_outer, ax_stxm_inner, ptycho_ims = build_combined_figure()
 
