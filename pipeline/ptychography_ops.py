@@ -173,6 +173,9 @@ class PtychoAccumulatorOp(Operator):
             self.ptycho_state["buf_free"][other] = False
             self.ptycho_state["write_idx"] = other
             self.ptycho_state["filled_until"][other] = 0
+            self.ptycho_state["raw_gpu"][other][:] = 0
+            self.ptycho_state["positions_full"][other][:] = 0 
+            self.ptycho_state["tilts_full"][other][:] = 0
             # Per-projection auto-centering: the first batch written into the
             # new buffer must derive a fresh center for that projection.
             self.ptycho_state["scan_center_py"] = None
@@ -413,8 +416,8 @@ class PtychoAccumulatorOp(Operator):
             is_energy_scan = scan_state.get("energy_steps_keV") is not None
             sign = 1 if (is_energy_scan or projection % 2 == 0) else -1
             batch_size_here = py.shape[0]
-            self.ptycho_state["scan_center_py"] = float(cp.mean(py)) + sign * halfview
-            self.ptycho_state["scan_center_px"] = float(cp.mean(px[(batch_size_here//2):]))
+            self.ptycho_state["scan_center_py"] = 0.0 #float(cp.mean(py)) + sign * halfview
+            self.ptycho_state["scan_center_px"] = float(cp.mean(px)) #float(cp.mean(px[(batch_size_here//2):]))
             
             self.logger.info(
                 "Auto-centring projection %d: center_py=%.6e m, center_px=%.6e m "
@@ -600,6 +603,8 @@ class PtychoReconstructionOp(Operator):
             pty_model = self.ptycho_state["pty_model"]
             pty_model.obj.array_global[:] = self._obj_initial
             pty_model.obj.array_global_old[:] = self._obj_initial
+            pty_model.obj.array_global_kernel[:] = self._obj_kernel_initial
+            pty_model.obj.array_global_kernel_old[:] = self._obj_kernel_initial
             if self.reset_probe:
                 pty_model.probe.array_states[:] = self._probe_initial
                 pty_model.source.flux = self._flux_initial
@@ -623,6 +628,10 @@ class PtychoReconstructionOp(Operator):
         with self.lock:
             r = self.ptycho_state["read_idx"]
             self.ptycho_state["buf_free"][r] = True          # accumulator may reuse it
+            self.ptycho_state["raw_gpu"][r][:] = 0
+            self.ptycho_state["positions_full"][r][:] = 0
+            self.ptycho_state["tilts_full"][r][:] = 0
+            self.ptycho_state["filled_until"][r] = 0
             self.ptycho_state["read_idx"] = (r + 1) % nbuf
         scan_state["current_projection"] = int(
             scan_state.get("current_projection", 0)
@@ -1110,6 +1119,7 @@ class PtychoReconstructionOp(Operator):
         # can reset the object back to its initial guess on flush. The probe
         # snapshot is only used when reset_probe is enabled.
         self._obj_initial = pty_model.obj.array_global.copy()
+        self._obj_kernel_initial = pty_model.obj.array_global_kernel.copy()
         self._probe_initial = pty_model.probe.array_states.copy()
         self._flux_initial = pty_model.source.flux  # may be < 0 (auto)
 
