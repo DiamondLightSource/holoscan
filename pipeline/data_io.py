@@ -45,7 +45,7 @@ def receive_cbor_message(zmq_message) -> tuple[str, cbor2.CBORTag, int, dict]:
     if msg_type == "image":
         compressed_image, image_id, msg_content = msg["data"]["threshold_1"], msg["image_id"], None
     elif msg_type == "start":
-        print(f"{msg_type} message content: {msg}")
+        print(f"Received {msg_type} message.") # content: {msg}
         compressed_image, image_id, msg_content = None, None, msg
     elif msg_type == "end":
         print(f"{msg_type} message content: {msg}")
@@ -203,7 +203,7 @@ class ZmqRxPositionOp(Operator):
                 # Handle data message
                 datasets = msg["datasets"]
                 #print(datasets)
-                
+
                 # Extract position data
                 x = np.array(datasets["/pi_x"]["data"]) #FMC_IN.VAL1.Mean
                 y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
@@ -376,7 +376,7 @@ class ZmqRxImageBatchOp(Operator):
 
                 self.batch[self.current_index] = data
                 if self.dummy_img_index:
-                    self.batch_ids[self.current_index] = self.series_frame_count - 1
+                    self.batch_ids[self.current_index] = self.series_frame_count
                 else:
                     # self.logger.info(f"Received image with id: {data_id}")
                     self.batch_ids[self.current_index] = data_id
@@ -459,7 +459,14 @@ class GatherOp(Operator):
                   gather -> masking_op -> publish
     """
     
-    def __init__(self, fragment, *args, batch_size: int = 1, **kwargs):
+    def __init__(
+        self,
+        fragment,
+        *args,
+        batch_size: int = 1,
+        scan_state: dict = None,
+        **kwargs,
+    ):
         """
         Initialize gather operator.
         
@@ -472,6 +479,18 @@ class GatherOp(Operator):
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
         self.batch_size = int(batch_size)
+        self.scan_state = scan_state
+        # R-1 (PR3): latched once the series-end metadata is seen, so the final
+        # partial batch (< batch_size) is drained instead of stranded. Reset on flush.
+        self._series_finished = False
+        # Deferred flush: flush() sets this flag and the actual cache clear
+        # happens at the top of the next compute(), so it never mutates the
+        # caches while compute() is mid-synchronise. This avoids the boolean-
+        # index race (data_io.py "size of axis is 0 but ... 64") when a flush
+        # arrives mid-stream — e.g. PR2's header preemption.
+        self._flush_requested = False
+        # PR5: track blocked matched-frame growth for observability.
+        self._last_blocked_common = -1
 
         self.logger = logging.getLogger(kwargs.get("name", "GatherOp"))
         super().__init__(fragment, *args, **kwargs)
@@ -481,24 +500,38 @@ class GatherOp(Operator):
         spec.input("positions").connector(IOSpec.ConnectorType.DOUBLE_BUFFER, capacity=128).condition(ConditionType.NONE)
         spec.output("output")
 
+    def _transition_blocked(self):
+        if self.scan_state is None:
+            return False
+        blocked_event = self.scan_state.get("transition_blocked_event")
+        return bool(blocked_event is not None and blocked_event.is_set())
+
     def flush(self):
-        """Reset all cached data on flush."""
+        """Request a cache reset. Deferred to the top of the next compute() so it
+        never clears the caches while compute() is mid-synchronise (thread-safe)."""
+        self._flush_requested = True
+
+    def _perform_flush(self):
+        """Actually clear the caches — only ever called from compute()."""
         self.images = None
         self.image_ids = np.zeros((0,), dtype=int)
         self.positions = np.zeros((0, 4))
         self.position_ids = np.zeros((0,), dtype=int)
         self.count = 0
+        self._series_finished = False
+        self._last_blocked_common = -1
         self.logger.info(
-            f"[FLUSH VERIFY] GatherOp cleared: "
-            f"images={None if self.images is None else self.images.shape}, "
-            f"image_ids={self.image_ids.size}, "
-            f"positions={self.positions.shape}, "
-            f"position_ids={self.position_ids.size}, "
-            f"count={self.count}"
+            "[FLUSH VERIFY] GatherOp cleared: images=None, image_ids=0, "
+            "positions=(0, 4), position_ids=0, count=0"
         )
 
-    def compute(self, op_input, op_output, context): 
+    def compute(self, op_input, op_output, context):
         """Gather and synchronize image and position data."""
+        # Perform any requested flush here — single-threaded w.r.t. the caches.
+        if self._flush_requested:
+            self._flush_requested = False
+            self._perform_flush()
+
         # Receive image data
         images_dict = op_input.receive("images")
         if images_dict is not None:
@@ -523,12 +556,42 @@ class GatherOp(Operator):
             self.positions = np.concatenate([self.positions, positions])
             self.position_ids = np.concatenate([self.position_ids, position_ids])
 
+        # R-1 (PR3): once the series has ended, drain the remaining matched IDs
+        # even if fewer than batch_size, so a final partial batch (no_frames not a
+        # multiple of batch_size) reaches the accumulator instead of stranding and
+        # idling the pipeline forever. series_finished flows from the image source
+        # via metadata on the final batch; latch it so the drain persists.
+        try:
+            if self.metadata is not None and self.metadata.get("series_finished", False):
+                self._series_finished = True
+        except Exception:
+            pass
+
         # Find common IDs between images and positions
         if self.images is not None and self.image_ids.size > 0 and self.position_ids.size > 0:
             common_ids = np.intersect1d(self.image_ids, self.position_ids).astype(int)
-            
+
+            drain = self._series_finished and int(common_ids.size) > 0
             #if common_ids.size > 0:
-            if int(common_ids.size) >= self.batch_size:
+            if int(common_ids.size) >= self.batch_size or drain:
+                blocked_common = int(common_ids.size)
+                if self._transition_blocked():
+                    if blocked_common != self._last_blocked_common:
+                        self._last_blocked_common = blocked_common
+                        self.logger.info(
+                            "Transition blocked: caching %d matched frames in GatherOp",
+                            blocked_common,
+                        )
+                    return
+
+                # Transition resumed / not blocked.
+                if self._last_blocked_common >= 0:
+                    self.logger.info(
+                        "Transition unblocked: resuming GatherOp emit with %d cached matched frames",
+                        blocked_common,
+                    )
+                self._last_blocked_common = -1
+
                 # Create vectorized masks for efficient filtering
                 mask_positions = np.isin(self.position_ids, common_ids)
                 mask_images = np.isin(self.image_ids, common_ids)

@@ -18,6 +18,13 @@ position_src:
   zmq_endpoint: "tcp://172.23.82.204:6666"
   receive_timeout_ms: 1000
 
+header_src:
+  # Dedicated ZMQ SUB socket for live scan-geometry headers (PR2). A JSON
+  # object with npoints_h/npoints_v/step_size_h/step_size_v/num_projections
+  # reconfigures scan geometry on the fly and preempts an in-flight recon.
+  zmq_endpoint: "tcp://172.23.82.204:6667"  # production endpoint (placeholder — adjust)
+  receive_timeout_ms: 100
+
 masking_op:
   center_x: 257
   center_y: 515
@@ -38,6 +45,14 @@ ptychography:
   ptyrex_config: "/workdir/test_data/pty_config_15keV_streamTest_6mm.json"
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
+  # Scan grid now comes from the live header (header_src). max_npoints_* set the
+  # GPU buffer capacity (allocated once, never realloced — R-6); default_step_*
+  # is the startup geometry before any header arrives. (Legacy no_frames/R/
+  # scan_range below are unused — dead keys, S3, left for a separate cleanup.)
+  max_npoints_h: 32   # capacity = 32*32 = 1024 frames (matches prior no_frames: 1024)
+  max_npoints_v: 32   # bump these (with GPU RAM in mind) if larger scans are needed
+  default_step_size_h: 0.25
+  default_step_size_v: 0.25
   no_frames: 1024
   total_iterations: 20
   post_stream_iterations: 1
