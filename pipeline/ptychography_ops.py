@@ -10,7 +10,6 @@ Operators:
 import logging
 import time
 
-from PtyREX.tests.io.conftest import pty_params
 import numpy as np
 import cupy as cp
 
