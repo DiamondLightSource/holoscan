@@ -893,6 +893,12 @@ class PtychoReconstructionOp(Operator):
                 "probe_phase": np.angle(probe_2d).astype(np.float32),
                 "probe_amp": np.abs(probe_2d).astype(np.float32),
                 "iteration": self.current_iteration,
+                "geometry": np.array([
+                    scan_state.get("npoints_h", 0),
+                    scan_state.get("npoints_v", 0),
+                    scan_state.get("step_size_h", 0.0),
+                    scan_state.get("step_size_v", 0.0),
+                ], dtype=np.float32),
             }
             op_output.emit(out, "output")
 
@@ -1048,6 +1054,7 @@ class PtychoPublishOp(Operator):
             "object_amp": "ptycho_object_amp",
             "probe_phase": "ptycho_probe_phase",
             "probe_amp": "ptycho_probe_amp",
+            "geometry": "ptycho_geometry",
         }
         self.logger = logging.getLogger(
             kwargs.get("name", "PtychoPublishOp")

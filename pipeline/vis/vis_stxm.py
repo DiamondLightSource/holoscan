@@ -90,6 +90,7 @@ STXM_SUBJECTS = (
 PTYCHO_SUBJECTS = (
     "ptycho_object_phase", "ptycho_object_amp",
     "ptycho_probe_phase", "ptycho_probe_amp", "ptycho_flush",
+    "ptycho_geometry",
 )
 
 
@@ -156,6 +157,7 @@ ptycho_dict = {
     "object_amp": None,
     "probe_phase": None,
     "probe_amp": None,
+    "geometry": None,
 }
 
 
@@ -176,6 +178,13 @@ def receive_ptycho_data(sub_backend):
                 ptycho_dict[key] = arr
             except Empty:
                 pass
+
+        # Geometry is a small 1-D array, not an image — handled separately.
+        try:
+            geom = sub_backend.get_queue("ptycho_geometry").get(block=False)
+            ptycho_dict["geometry"] = np.asarray(geom).flatten()
+        except Empty:
+            pass
 
         try:
             sub_backend.get_queue("ptycho_flush").get(block=False)
@@ -309,13 +318,24 @@ def animate_combined(i):
             print(f"STXM frame {i}: {n_plot} points")
 
     # ---- Ptycho panels ----
+    geom = ptycho_dict.get("geometry")
     for key, im in ptycho_ims.items():
         arr = ptycho_dict[key]
         if arr is not None and arr.ndim >= 2:
             im.set_data(arr)
             im.set_clim(vmin=np.nanpercentile(arr, 2),
                         vmax=np.nanpercentile(arr, 98))
-
+            
+            # Object panels: re-derive extent/aspect from current scan geometry
+            # every update, since it can change scan-to-scan.
+            if key.startswith("object") and geom is not None and geom.size == 4:
+                npoints_h, npoints_v, step_h, step_v = geom
+                if step_h > 0 and step_v > 0:
+                    fov_w = npoints_h * step_h
+                    fov_h = npoints_v * step_v
+                    h_px, w_px = arr.shape[-2], arr.shape[-1]
+                    im.set_extent((-0.5, w_px - 0.5, h_px - 0.5, -0.5))
+                    im.axes.set_aspect((fov_h / h_px) / (fov_w / w_px))
 
 # ===================== Main =====================
 
