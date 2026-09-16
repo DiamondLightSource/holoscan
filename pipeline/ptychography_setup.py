@@ -97,6 +97,7 @@ def load_ptycho_model(ptycho_cfg: dict):
     pty_data, pty_model, pty_params = json_read.load(ptyrex_config_path, scan_ID, ID)
 
     pty_params.total_iterations = ptycho_cfg["total_iterations"]
+    pty_params.save_every = pty_params.total_iterations + 1  # disable PtyREX's own periodic save; PR3 saves per-projection instead
 
     # Ensure string attributes expected by PtyREX save/config routines
     pty_params.recon_name = time.strftime("%Y%m%d-%H%M%S")

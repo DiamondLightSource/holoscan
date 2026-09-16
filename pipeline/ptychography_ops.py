@@ -10,6 +10,7 @@ Operators:
 import logging
 import time
 
+from PtyREX.tests.io.conftest import pty_params
 import numpy as np
 import cupy as cp
 
@@ -27,6 +28,7 @@ from ptyrex.reconstruct.iterator.PIE_cupy import (
 )
 
 import os
+import time
 
 # Route the PIE update through the optimized CUDA-Graph capture path by
 # default. Opt out with PTYREX_CAPTURE_GRAPH=0; use PTYREX_PROFILING_UPDATE=1
@@ -934,6 +936,7 @@ class PtychoReconstructionOp(Operator):
                         self.ptycho_state["read_idx"],
                     )
             else:
+                self._save_projection_file()
                 op_output.emit("recon_complete", "complete")
                 self.logger.info(
                     "Reconstruction complete at iteration %d", self.current_iteration
@@ -972,16 +975,21 @@ class PtychoReconstructionOp(Operator):
         if self.publish_folder is None:
             return
         scan_state = self.ptycho_state.get("scan_state") or {}
-        series_id = scan_state.get("series_id", "unknown")
+        series_id = scan_state.get("series_id", 0) # default to 0
         proj = int(scan_state.get("current_projection", 0))
         pty_model = self.ptycho_state["pty_model"]
         obj_2d = np.squeeze(cp.asnumpy(pty_model.obj.array_global))
         probe_2d = np.squeeze(cp.asnumpy(pty_model.probe.array_states))
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        pty_params = self.ptycho_state["pty_params"]
+        prefix = pty_params.save_prefix
+    
         import h5py
         try:
             os.makedirs(self.publish_folder, exist_ok=True)
             path = os.path.join(
-                self.publish_folder, f"{series_id}_proj{proj:02d}_recon.h5"
+                self.publish_folder, f"{prefix}_id{series_id:03d}_proj{proj:03d}_{timestamp}_recon.h5"
             )
             with h5py.File(path, "w") as f:
                 f.create_dataset("object_phase", data=np.angle(obj_2d).astype(np.float32))
