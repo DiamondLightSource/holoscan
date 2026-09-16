@@ -329,6 +329,8 @@ def animate_combined(i):
             # Object panels: re-derive extent/aspect from current scan geometry
             # every update, since it can change scan-to-scan.
             if key.startswith("object") and geom is not None and geom.size == 4:
+                im.set_clim(vmin=np.nanpercentile(arr, 10), 
+                            vmax=np.nanpercentile(arr, 90))
                 npoints_h, npoints_v, step_h, step_v = geom
                 if step_h > 0 and step_v > 0:
                     fov_w = npoints_h * step_h

@@ -994,7 +994,7 @@ class PtychoReconstructionOp(Operator):
         try:
             os.makedirs(self.publish_folder, exist_ok=True)
             path = os.path.join(
-                self.publish_folder, f"{prefix}_id{series_id:03d}_proj{proj:03d}_{timestamp}_recon.h5"
+                self.publish_folder, f"{prefix}_{series_id:03d}_proj{proj:03d}_{timestamp}_recon.h5"
             )
             with h5py.File(path, "w") as f:
                 f.create_dataset("object_phase", data=np.angle(obj_2d).astype(np.float32))
