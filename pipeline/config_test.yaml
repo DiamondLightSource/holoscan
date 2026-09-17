@@ -57,8 +57,18 @@ ptychography:
   # a header requesting more frames is rejected — bump these with GPU RAM in mind)
   default_step_size_h: 0.2 # startup step size (microns), until a header arrives
   default_step_size_v: 0.2 # startup step size (microns), until a header arrives
-  total_iterations: 35
-  post_stream_iterations: 1
+  total_iterations: 35   # informational/legacy when sliding_window_enabled; authoritative in rollback mode
+  post_stream_iterations: 1   # unused when sliding_window_enabled; authoritative in rollback mode
   housekeeping_interval: 1
   publish_interval: 1
   reset_probe: false  # false = carry previous scan's probe forward (warm start); true = full probe reset each scan
+  # Sliding-window fair iteration (see ptychography_fair_iteration_plan.md).
+  # Every frame in a window gets exactly window_iterations PIE updates instead
+  # of early-arriving frames accumulating far more updates than late ones.
+  # Rollback to today's plain accumulation is forced automatically if
+  # window_size >= max_npoints_h*max_npoints_v, or explicitly via the flag below.
+  sliding_window_enabled: true
+  window_size: 2000        # absolute frame count; fixed across live header reconfigures
+  # window_overlap defaults to window_size // 2 if omitted (window_step == overlap).
+  # window_overlap: 1000
+  window_iterations: 2     # recommended 1-2 for throughput; fully user-configurable

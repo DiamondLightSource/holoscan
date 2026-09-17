@@ -261,6 +261,15 @@ def configure_scan_geometry(
         ptycho_state["write_idx"] = 0
         ptycho_state["read_idx"] = 0
         ptycho_state["buf_free"] = [i != 0 for i in range(nbuf)]
+        # Sliding-window scheduling cursors (fair-iteration plan): reset to the
+        # first window on every (re)configure, same boundary as the ping-pong
+        # reset above. window_size stays a fixed absolute frame count (not
+        # rescaled to the new grid), so the first window may be smaller than
+        # window_size if no_frames < window_size.
+        window_size = ptycho_state["window_size"]
+        ptycho_state["window_start"] = [0] * nbuf
+        ptycho_state["window_end"] = [min(window_size, no_frames)] * nbuf
+        ptycho_state["window_iteration"] = [0] * nbuf
     ptycho_state["N"] = N
     # Clear auto-centre so the new geometry re-derives its own scan centre.
     ptycho_state["scan_center_py"] = None
@@ -318,6 +327,30 @@ def init_ptycho_state(ptycho_cfg: dict, scan_state: dict = None) -> dict:
     default_step_h = float(ptycho_cfg["default_step_size_h"])
     default_step_v = float(ptycho_cfg["default_step_size_v"])
 
+    # ── 2b. Sliding-window fair-iteration config (fair-iteration plan) ─
+    # window_size is a fixed absolute frame count (never rescaled to a live
+    # header's grid). Rollback to plain accumulation (today's behavior) is
+    # forced automatically when window_size >= capacity, or explicitly via
+    # sliding_window_enabled: false.
+    window_size = int(ptycho_cfg.get("window_size", capacity))
+    window_overlap = int(ptycho_cfg.get("window_overlap", window_size // 2))
+    if window_overlap >= window_size:
+        logger.warning(
+            "ptychography.window_overlap (%d) >= window_size (%d); clamping "
+            "overlap so window_step stays positive", window_overlap, window_size,
+        )
+        window_overlap = max(window_size - 1, 0)
+    window_step = max(window_size - window_overlap, 1)
+    window_iterations = int(ptycho_cfg.get("window_iterations", 2))
+    sliding_window_flag = bool(ptycho_cfg.get("sliding_window_enabled", True))
+    sliding_window_enabled = sliding_window_flag and window_size < capacity
+    logger.info(
+        "Sliding-window fair iteration: %s (window_size=%d, window_overlap=%d, "
+        "window_step=%d, window_iterations=%d, capacity=%d)",
+        "ENABLED" if sliding_window_enabled else "DISABLED (rollback to plain accumulation)",
+        window_size, window_overlap, window_step, window_iterations, capacity,
+    )
+
     # ── 3. Pre-allocate GPU buffers ONCE at max capacity (R-6) ─────────
     # PR4 double-buffering: TWO buffer sets (ping-pong). While the recon
     # finalizes projection N on the read buffer, the accumulator fills
@@ -365,6 +398,17 @@ def init_ptycho_state(ptycho_cfg: dict, scan_state: dict = None) -> dict:
         "N": None,               # set by configure_scan_geometry
         "lock": threading.Lock(),
         "scan_state": scan_state,
+        # Sliding-window fair-iteration scheduling (fair-iteration plan). Config
+        # scalars are fixed for the process lifetime; window_start/end/iteration
+        # are per-buffer cursors (PR4-aware), reset by configure_scan_geometry.
+        "window_size": window_size,
+        "window_overlap": window_overlap,
+        "window_step": window_step,
+        "window_iterations": window_iterations,
+        "sliding_window_enabled": sliding_window_enabled,
+        "window_start": [0] * NUM_BUFFERS,
+        "window_end": [0] * NUM_BUFFERS,
+        "window_iteration": [0] * NUM_BUFFERS,
         # Preemption handshake (R-4): header stages pending_geometry + sets
         # preempt_requested; recon saves the partial, sets quiesced, then applies
         # the geometry while quiesced and clears the flags.

@@ -121,11 +121,17 @@ class PtychoAccumulatorOp(Operator):
         under the lock. Idempotent, so the accumulator's and recon's deferred
         flushes can both call it in any order without disagreeing."""
         nbuf = self.ptycho_state["num_buffers"]
+        no_frames = self.ptycho_state["no_frames"]
+        window_size = self.ptycho_state["window_size"]
         with self.lock:
             self.ptycho_state["filled_until"] = [0] * nbuf
             self.ptycho_state["write_idx"] = 0
             self.ptycho_state["read_idx"] = 0
             self.ptycho_state["buf_free"] = [i != 0 for i in range(nbuf)]
+            # Defensive (recon owns these); idempotent with the recon's own reset.
+            self.ptycho_state["window_start"] = [0] * nbuf
+            self.ptycho_state["window_end"] = [min(window_size, no_frames)] * nbuf
+            self.ptycho_state["window_iteration"] = [0] * nbuf
 
     def _perform_flush(self):
         """Reset fill levels + ping-pong and zero the GPU buffers. Only ever called
@@ -170,6 +176,12 @@ class PtychoAccumulatorOp(Operator):
             self.ptycho_state["raw_gpu"][other][:] = 0
             self.ptycho_state["positions_full"][other][:] = 0 
             self.ptycho_state["tilts_full"][other][:] = 0
+            # Defensive (recon owns these, reset again in _flip_read/_perform_advance).
+            window_size = self.ptycho_state["window_size"]
+            no_frames = self.ptycho_state["no_frames"]
+            self.ptycho_state["window_start"][other] = 0
+            self.ptycho_state["window_end"][other] = min(window_size, no_frames)
+            self.ptycho_state["window_iteration"][other] = 0
             # Per-projection auto-centering: the first batch written into the
             # new buffer must derive a fresh center for that projection.
             self.ptycho_state["scan_center_py"] = None
@@ -524,6 +536,33 @@ class PtychoReconstructionOp(Operator):
                 pty_model.source.flux = self._flux_initial
         self.logger.info("Recon advanced to next projection (object reset, probe carried)")
 
+    def _advance_window(self, r, n_filled, no_frames):
+        """Sliding-window scheduling (fair-iteration plan): bump buffer ``r``'s
+        window-iteration counter once its active window is fully filled
+        (``window_end <= n_filled``), and slide the window forward by
+        ``window_step`` once it has received its ``window_iterations`` budget.
+        No-op if the window is still waiting on data (live-preview ticks before
+        that point don't count toward the advance budget)."""
+        with self.lock:
+            w_start = self.ptycho_state["window_start"][r]
+            w_end = self.ptycho_state["window_end"][r]
+            if w_end > n_filled:
+                return
+            self.ptycho_state["window_iteration"][r] += 1
+            if self.ptycho_state["window_iteration"][r] < self.ptycho_state["window_iterations"]:
+                return
+            step = self.ptycho_state["window_step"]
+            window_size = self.ptycho_state["window_size"]
+            new_start = min(w_start + step, no_frames)
+            new_end = min(new_start + window_size, no_frames)
+            self.ptycho_state["window_start"][r] = new_start
+            self.ptycho_state["window_end"][r] = new_end
+            self.ptycho_state["window_iteration"][r] = 0
+        self.logger.info(
+            "Window advanced on buffer %d: [%d, %d) -> [%d, %d)",
+            r, w_start, w_end, new_start, new_end,
+        )
+
     def _flip_read(self, scan_state):
         """PR4: finished the current read buffer — release it back to the
         accumulator, advance current_projection (the recon owns it, so the file
@@ -563,11 +602,17 @@ class PtychoReconstructionOp(Operator):
         # accumulator's own (deferred) flush zeros the buffers. Idempotent with the
         # accumulator's identical reset — order-independent.
         nbuf = self.ptycho_state["num_buffers"]
+        no_frames = self.ptycho_state["no_frames"]
+        window_size = self.ptycho_state["window_size"]
         with self.lock:
             self.ptycho_state["filled_until"] = [0] * nbuf
             self.ptycho_state["write_idx"] = 0
             self.ptycho_state["read_idx"] = 0
             self.ptycho_state["buf_free"] = [i != 0 for i in range(nbuf)]
+            # Mirrors the accumulator's own (idempotent) window-cursor reset.
+            self.ptycho_state["window_start"] = [0] * nbuf
+            self.ptycho_state["window_end"] = [min(window_size, no_frames)] * nbuf
+            self.ptycho_state["window_iteration"] = [0] * nbuf
         if self.initialized_gpu:
             pty_model = self.ptycho_state["pty_model"]
             pty_model.obj.array_global[:] = self._obj_initial
@@ -739,8 +784,15 @@ class PtychoReconstructionOp(Operator):
             )
             self.logger.info("All %d frames arrived", no_frames)
 
-        # Check stopping condition
-        if self.current_iteration >= self.total_iterations:
+        # Check stopping condition. Windowed mode paces itself via the per-buffer
+        # window schedule (no artificial pause waiting for total_iterations); it
+        # is only genuinely done once the last window has advanced past
+        # no_frames and all data has arrived.
+        sliding_window_enabled = self.ptycho_state.get("sliding_window_enabled", False)
+        if sliding_window_enabled:
+            if self.ptycho_state["window_start"][r] >= no_frames and self.all_data_arrived:
+                return
+        elif self.current_iteration >= self.total_iterations:
             if (
                 self.all_data_arrived
                 and self.post_stream_count < self.post_stream_iterations
@@ -808,6 +860,18 @@ class PtychoReconstructionOp(Operator):
             (pos_y >= half_h) & (pos_y + half_h <= obj_h)
             & (pos_x >= half_w) & (pos_x + half_w <= obj_w)
         )
+
+        # Sliding-window scheduling (fair-iteration plan): restrict this tick's
+        # update to the active window's slice of the buffer, clamped to what has
+        # actually arrived (live preview during fill). No per-frame counting —
+        # overlap-band frames get processed by both neighboring windows (see
+        # plan's "Known Open Effect").
+        if sliding_window_enabled:
+            w_start = self.ptycho_state["window_start"][r]
+            w_end = min(self.ptycho_state["window_end"][r], n_filled)
+            idx = cp.arange(n_filled)
+            valid_mask = valid_mask & (idx >= w_start) & (idx < w_end)
+
         valid_ids = cp.where(valid_mask)[0].astype(cp.int32)
         n_oob = n_filled - int(valid_ids.size)
 
@@ -821,7 +885,7 @@ class PtychoReconstructionOp(Operator):
                 py_min, py_max, px_min, px_max,
             )
 
-        if n_oob > 0:
+        if n_oob > 0 and not sliding_window_enabled:
             self.logger.warning(
                 "Iter %d: %d/%d positions OUT OF BOUNDS — check R config",
                 self.current_iteration, n_oob, n_filled,
@@ -862,11 +926,27 @@ class PtychoReconstructionOp(Operator):
         pty_model.scan.positions = self.ptycho_state["positions_full"][r]
         pty_model.scan.tilts = self.ptycho_state["tilts_full"][r]
 
+        # Sliding-window advance (fair-iteration plan): bump this buffer's
+        # window-iteration counter only once its window is fully filled, and
+        # slide the window forward by window_step once it's had its
+        # window_iterations budget.
+        if sliding_window_enabled:
+            self._advance_window(r, n_filled, no_frames)
+
         # Housekeeping (every N iterations or on last). For tomography
         # (num_projections > 1) a projection completes as soon as all its frames
         # are in — finish this in-flight iteration, then advance (plan PR3). For a
         # single projection, run to total_iterations + post_stream (as before).
-        if num_projections > 1:
+        # Windowed mode uses the same "done" condition for both: every window has
+        # been processed (window_start advanced past no_frames) and all data has
+        # arrived — total_iterations/post_stream_iterations are informational
+        # only in this mode (see plan Locked Decisions).
+        if sliding_window_enabled:
+            is_last = (
+                self.all_data_arrived
+                and self.ptycho_state["window_start"][r] >= no_frames
+            )
+        elif num_projections > 1:
             is_last = self.all_data_arrived
         else:
             is_last = self.current_iteration >= self.total_iterations - 1 and (
