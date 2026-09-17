@@ -811,13 +811,28 @@ class PtychoReconstructionOp(Operator):
         pty_model = self.ptycho_state["pty_model"]
         pty_params = self.ptycho_state["pty_params"]
 
+        # Sliding-window scheduling (fair-iteration plan): slice positions/tilts/
+        # raw data down to the active window's range *before* computing
+        # frame_IDs. PtyREX's update_subset(_profiling) indexes raw_expanded and
+        # the scan-shift buffers by loop position (0, 1, 2, ...), assuming
+        # frame_IDs is contiguous from 0 — true when frame_IDs == arange(n_valid)
+        # (the non-windowed case), but false for an offset window like
+        # [1260, 1620). Slicing here keeps frame_IDs 0-based and contiguous so
+        # that invariant holds in both modes; only the OOB filter below then
+        # trims it further.
+        if sliding_window_enabled:
+            w_start = self.ptycho_state["window_start"][r]
+            w_end = min(self.ptycho_state["window_end"][r], n_filled)
+        else:
+            w_start, w_end = 0, n_filled
+
         pty_model.scan.positions = self.ptycho_state["positions_full"][r][
-            :, :, :n_filled
+            :, :, w_start:w_end
         ]
         pty_model.scan.tilts = self.ptycho_state["tilts_full"][r][
-            :, :, :n_filled
+            :, :, w_start:w_end
         ]
-        pty_data.raw_expanded = self.ptycho_state["raw_gpu"][r][:n_filled][
+        pty_data.raw_expanded = self.ptycho_state["raw_gpu"][r][w_start:w_end][
             cp.newaxis, :, :, :
         ]
 
@@ -861,19 +876,11 @@ class PtychoReconstructionOp(Operator):
             & (pos_x >= half_w) & (pos_x + half_w <= obj_w)
         )
 
-        # Sliding-window scheduling (fair-iteration plan): restrict this tick's
-        # update to the active window's slice of the buffer, clamped to what has
-        # actually arrived (live preview during fill). No per-frame counting —
-        # overlap-band frames get processed by both neighboring windows (see
-        # plan's "Known Open Effect").
-        if sliding_window_enabled:
-            w_start = self.ptycho_state["window_start"][r]
-            w_end = min(self.ptycho_state["window_end"][r], n_filled)
-            idx = cp.arange(n_filled)
-            valid_mask = valid_mask & (idx >= w_start) & (idx < w_end)
-
+        # frame_IDs stay local to the (already window-sliced) positions/raw_expanded
+        # view above — no separate window-bounds re-filter needed here.
         valid_ids = cp.where(valid_mask)[0].astype(cp.int32)
-        n_oob = n_filled - int(valid_ids.size)
+        n_window = w_end - w_start
+        n_oob = n_window - int(valid_ids.size)
 
         if self.current_iteration == 0:
             py_min, py_max = float(cp.min(pos_y)), float(cp.max(pos_y))
@@ -881,20 +888,20 @@ class PtychoReconstructionOp(Operator):
             self.logger.info(
                 "Iter 0: %d/%d valid (object %dx%d, half-probe %dx%d), "
                 "py=[%.1f,%.1f], px=[%.1f,%.1f]",
-                valid_ids.size, n_filled, obj_h, obj_w, half_h, half_w,
+                valid_ids.size, n_window, obj_h, obj_w, half_h, half_w,
                 py_min, py_max, px_min, px_max,
             )
 
         if n_oob > 0 and not sliding_window_enabled:
             self.logger.warning(
                 "Iter %d: %d/%d positions OUT OF BOUNDS — check R config",
-                self.current_iteration, n_oob, n_filled,
+                self.current_iteration, n_oob, n_window,
             )
 
         if valid_ids.size == 0:
             self.logger.error(
                 "No valid positions (0/%d in object bounds), skipping iteration",
-                n_filled,
+                n_window,
             )
             pty_model.scan.positions = self.ptycho_state["positions_full"][r]
             pty_model.scan.tilts = self.ptycho_state["tilts_full"][r]
