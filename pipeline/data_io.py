@@ -205,17 +205,17 @@ class ZmqRxPositionOp(Operator):
                 #print(datasets)
 
                 # Extract position data
-                x = np.array(datasets["/pi_x"]["data"]) #FMC_IN.VAL1.Mean
+                x = np.array(datasets["/FMC_IN.VAL1.Mean"]["data"]) #FMC_IN.VAL1.Mean /pi_x
                 y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
                 z = np.array(datasets["/FMC_IN.VAL3.Mean"]["data"])
-                th = np.array(datasets["/INENC4.VAL.Mean"]["data"])
+                th = np.array(datasets["/FMC_IN.VAL5.Mean"]["data"]) #/INENC4.VAL.Mean
                 positions = np.stack([x, y, z, th], axis=1)
                 batch_size = positions.shape[0]
                 
                 # Get starting_sample_number and size from the message
                 # All datasets should have the same starting_sample_number and size
-                starting_sample_number = datasets["/pi_x"]["starting_sample_number"] #FMC_IN.VAL1.Mean
-                batch_size = datasets["/pi_x"]["size"] #FMC_IN.VAL1.Mean
+                starting_sample_number = datasets["/FMC_IN.VAL1.Mean"]["starting_sample_number"] #FMC_IN.VAL1.Mean
+                batch_size = datasets["/FMC_IN.VAL1.Mean"]["size"] #FMC_IN.VAL1.Mean
                 
                 # Calculate position_ids directly from starting_sample_number
                 position_ids = starting_sample_number + np.arange(batch_size)
@@ -373,7 +373,7 @@ class ZmqRxImageBatchOp(Operator):
                 if self.first_frame_flag:
                     self.series_start_time = time.time()
                     self.first_frame_flag = False
-
+                #print('received image')
                 self.batch[self.current_index] = data
                 if self.dummy_img_index:
                     self.batch_ids[self.current_index] = self.series_frame_count
@@ -620,7 +620,7 @@ class GatherOp(Operator):
                 # No common IDs found - report cache state
                 img_range = f"{self.image_ids.min()}-{self.image_ids.max()}" if self.image_ids.size > 0 else "none"
                 pos_range = f"{self.position_ids.min()}-{self.position_ids.max()}" if self.position_ids.size > 0 else "none"
-                self.logger.info(
+                self.logger.debug(
                     f"No intersection found. Cached: {self.image_ids.size} images (IDs: {img_range}), "
                     f"{self.position_ids.size} positions (IDs: {pos_range})"
                 )
