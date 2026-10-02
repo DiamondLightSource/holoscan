@@ -567,6 +567,10 @@ class PtychoReconstructionOp(Operator):
                 return
             
             new_end = candidate_end
+            if new_end >= no_frames and w_end >= no_frames:
+                # This window already covers everything up to no_frames and has had its
+                # iteration budget — scan is done, don't re-apply overlap forever.
+                new_start = no_frames
             self.ptycho_state["window_start"][r] = new_start
             self.ptycho_state["window_end"][r] = new_end
             self.ptycho_state["window_iteration"][r] = 0
