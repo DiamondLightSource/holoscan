@@ -51,14 +51,14 @@ ptychography:
   # Scan grid now comes from the live header (header_src). These set the GPU
   # buffer capacity (allocated once, never realloced — R-6) and the default
   # geometry used at startup before any header arrives.
-  max_npoints_h: 50        # buffer capacity + startup default grid (horizontal)
-  max_npoints_v: 50        # buffer capacity + startup default grid (vertical)
+  max_npoints_h: 100        # buffer capacity + startup default grid (horizontal)
+  max_npoints_v: 100        # buffer capacity + startup default grid (vertical)
   # capacity = 100*100 = 10000 frames (matches the prior committed 100x100 grid;
   # a header requesting more frames is rejected — bump these with GPU RAM in mind)
   default_step_size_h: 0.2 # startup step size (microns), until a header arrives
   default_step_size_v: 0.2 # startup step size (microns), until a header arrives
-  total_iterations: 150
+  total_iterations: 100
   post_stream_iterations: 1
   housekeeping_interval: 1
   publish_interval: 1
-  reset_probe: false  # false = carry previous scan's probe forward (warm start); true = full probe reset each scan
+  reset_probe: true  # false = carry previous scan's probe forward (warm start); true = full probe reset each scan

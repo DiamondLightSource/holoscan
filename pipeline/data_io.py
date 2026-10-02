@@ -208,7 +208,8 @@ class ZmqRxPositionOp(Operator):
                 x = np.array(datasets["/FMC_IN.VAL1.Mean"]["data"]) #FMC_IN.VAL1.Mean /pi_x
                 y = np.array(datasets["/FMC_IN.VAL2.Mean"]["data"])
                 z = np.array(datasets["/FMC_IN.VAL3.Mean"]["data"])
-                th = np.array(datasets["/FMC_IN.VAL5.Mean"]["data"]) #/INENC4.VAL.Mean
+                th = np.array(datasets["/t1_theta"]["data"]) #/INENC4.VAL.Mean
+                
                 positions = np.stack([x, y, z, th], axis=1)
                 batch_size = positions.shape[0]
                 
