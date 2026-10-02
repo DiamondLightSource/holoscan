@@ -551,12 +551,22 @@ class PtychoReconstructionOp(Operator):
             self.ptycho_state["window_iteration"][r] += 1
             if self.ptycho_state["window_iteration"][r] < self.ptycho_state["window_iterations"]:
                 return
-            step = self.ptycho_state["window_step"]
+            #step = self.ptycho_state["window_step"]
             window_size = self.ptycho_state["window_size"]
-            new_start = w_end # for filling the window with everything in the queue 
+            window_overlap = self.ptycho_state["window_overlap"] 
+            # Re-include the trailing `window_overlap` frames of the window just
+            # finished, so consecutive windows share context at the boundary.
+            new_start = max(w_end - window_overlap, w_start)
+            # new_start = w_end # for filling the window with everything in the queue 
             #new_start = min(w_start + step, no_frames) # for keeping window always the same size
-            new_end = min(self.ptycho_state["filled_until"][r], no_frames) # fresh snapshot, filling with everything in the queue
+            candidate_end = min(self.ptycho_state["filled_until"][r], no_frames) # fresh snapshot, filling with everything in the queue
             #new_end = min(new_start + window_size, no_frames) # for keeping window always the same size
+
+            if candidate_end - new_start < window_size and candidate_end < no_frames:
+                self.ptycho_state["window_iteration"][r] -= 1
+                return
+            
+            new_end = candidate_end
             self.ptycho_state["window_start"][r] = new_start
             self.ptycho_state["window_end"][r] = new_end
             self.ptycho_state["window_iteration"][r] = 0
