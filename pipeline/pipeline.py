@@ -60,6 +60,7 @@ class StxmApp(Application):
         self.num_decompress_ops = 4
         self.ptychography_enabled = False
         self.ptycho_state = None
+        self.ptycho_recon = None
         # Always-present shared holder (S11) for projection/frame counts, written
         # by the header op and read by both the STXM and ptycho paths. Populated
         # in main(); the frame count is filled in by configure_scan_geometry.
@@ -185,6 +186,8 @@ class StxmApp(Application):
                 name="ptycho_reconstruction",
             )
 
+            self.ptycho_recon = ptycho_recon
+
             ptycho_publish = PtychoPublishOp(
                 self,
                 publish_backend=publish_backend,
@@ -308,7 +311,12 @@ def main():
         )
 
     app.scheduler(scheduler)
-    app.run()
+    try: 
+        app.run()
+    except KeyboardInterrupt:
+        if app.ptycho_recon is not None:
+            app.ptycho_recon.save_if_interrupted()
+        raise
 
 
 if __name__ == "__main__":

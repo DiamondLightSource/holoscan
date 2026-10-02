@@ -503,6 +503,11 @@ class PtychoReconstructionOp(Operator):
         the next compute() (deferred, so it never races the PIE update)."""
         self._flush_requested = True
 
+    def save_if_interrupted(self):
+        """Save the in-flight projection after the scheduler has stopped (Ctrl+C)."""
+        if self.initialized_gpu and self.current_iteration > 0 and not self._completed:
+            self._save_projection_file()
+
     def _perform_advance(self):
         """Per-projection reset: fresh object + iteration counters for the next
         projection, probe carried over (warm start). Does NOT touch the buffers —
@@ -552,6 +557,8 @@ class PtychoReconstructionOp(Operator):
         scan as a warm start, since consecutive scans usually share
         illumination. Set ``reset_probe=True`` to fully reset the probe too.
         """
+        if self.initialized_gpu and self.current_iteration > 0 and not self._completed:
+            self._save_projection_file()
         self._flush_requested = False
         scan_state = self.ptycho_state.get("scan_state") or {}
         self.current_iteration = 0
@@ -615,6 +622,8 @@ class PtychoReconstructionOp(Operator):
             # arrays back to device (no to_device).
             from_device(pty_model, pty_params)
             setup.after_iteration(pty_data, pty_model, pty_params, pty_plot=None)
+            if not self._completed:          # already saved by the normal completion path
+                self._save_projection_file()
             obj_2d = np.squeeze(cp.asnumpy(pty_model.obj.array_global))
             probe_2d = np.squeeze(cp.asnumpy(pty_model.probe.array_states))
             out = {
@@ -983,8 +992,6 @@ class PtychoReconstructionOp(Operator):
         series_id = scan_state.get("series_id", 0) # default to 0
         proj = int(scan_state.get("current_projection", 0))
         pty_model = self.ptycho_state["pty_model"]
-        obj_2d = np.squeeze(cp.asnumpy(pty_model.obj.array_global))
-        probe_2d = np.squeeze(cp.asnumpy(pty_model.probe.array_states))
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         pty_params = self.ptycho_state["pty_params"]
@@ -996,6 +1003,8 @@ class PtychoReconstructionOp(Operator):
             path = os.path.join(
                 self.publish_folder, f"{prefix}_{series_id:03d}_proj{proj:03d}_{timestamp}_recon.h5"
             )
+            obj_2d = np.squeeze(cp.asnumpy(pty_model.obj.array_global))
+            probe_2d = np.squeeze(cp.asnumpy(pty_model.probe.array_states))
             with h5py.File(path, "w") as f:
                 f.create_dataset("object_phase", data=np.angle(obj_2d).astype(np.float32))
                 f.create_dataset("object_amp", data=np.abs(obj_2d).astype(np.float32))
