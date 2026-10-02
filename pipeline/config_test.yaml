@@ -8,7 +8,7 @@ image_src:
   zmq_endpoint: "tcp://172.23.82.48:31001"  # Production endpoint # .48 for the eiger, .131 for the selun
   #zmq_endpoint: "tcp://172.23.82.77:5555"        # Local simulator
   receive_timeout_ms: 1000  # Increased timeout for testing
-  batch_size: 100         # Larger batch for testing
+  batch_size: 440         # Larger batch for testing
 
 decompress_op:
   #data_size: [190, 190]  # Match selun test data (192x192 images)
@@ -45,14 +45,14 @@ sink_and_publish_op:
 
 ptychography:
   enabled: true
-  ptyrex_config: "/workdir/PtyREX/config_Oct26.json"
+  ptyrex_config: "/workdir/PtyREX/config_Oct26_eiger.json"
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
   # Scan grid now comes from the live header (header_src). These set the GPU
   # buffer capacity (allocated once, never realloced — R-6) and the default
   # geometry used at startup before any header arrives.
-  max_npoints_h: 100        # buffer capacity + startup default grid (horizontal)
-  max_npoints_v: 100        # buffer capacity + startup default grid (vertical)
+  max_npoints_h: 300        # buffer capacity + startup default grid (horizontal)
+  max_npoints_v: 300        # buffer capacity + startup default grid (vertical)
   # capacity = 100*100 = 10000 frames (matches the prior committed 100x100 grid;
   # a header requesting more frames is rejected — bump these with GPU RAM in mind)
   default_step_size_h: 0.2 # startup step size (microns), until a header arrives
