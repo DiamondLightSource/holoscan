@@ -553,8 +553,10 @@ class PtychoReconstructionOp(Operator):
                 return
             step = self.ptycho_state["window_step"]
             window_size = self.ptycho_state["window_size"]
-            new_start = min(w_start + step, no_frames)
-            new_end = min(new_start + window_size, no_frames)
+            new_start = w_end # for filling the window with everything in the queue 
+            #new_start = min(w_start + step, no_frames) # for keeping window always the same size
+            new_end = min(self.ptycho_state["filled_until"][r], no_frames) # fresh snapshot, filling with everything in the queue
+            #new_end = min(new_start + window_size, no_frames) # for keeping window always the same size
             self.ptycho_state["window_start"][r] = new_start
             self.ptycho_state["window_end"][r] = new_end
             self.ptycho_state["window_iteration"][r] = 0
