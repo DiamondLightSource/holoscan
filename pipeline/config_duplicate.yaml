@@ -5,14 +5,15 @@ scheduler:
   worker_threads: 4
 
 image_src:
-  zmq_endpoint: "tcp://172.23.82.48:31001"  # Production endpoint # .48 for the eiger, .131 for the selun
+  #zmq_endpoint: "tcp://172.23.82.131:31001"  # Production endpoint # .48 for the eiger, .131 for the selun
   #zmq_endpoint: "tcp://172.23.82.77:5555"        # Local simulator
+  zmq_endpoint: "tcp://172.23.82.95:8882" # Production endpoint with splitter
   receive_timeout_ms: 1000  # Increased timeout for testing
-  batch_size: 440         # Larger batch for testing
+  batch_size: 200         # Larger batch for testing
 
 decompress_op:
-  #data_size: [190, 190]  # Match selun test data (192x192 images)
-  data_size: [514, 1030]  # Match eiger test data (514x1030 images)
+  data_size: [190, 190]  # Match selun test data (192x192 images)
+  #data_size: [514, 1030]  # Match eiger test data (514x1030 images)
   data_dtype: uint32
 
 position_src:
@@ -29,9 +30,9 @@ header_src:
   receive_timeout_ms: 100  # short so the blocking recv doesn't hold a worker thread
 
 masking_op:
-  center_x: 520  # Adjusted for 192x192 images (center)
-  center_y: 242 # 290  # Adjusted for 192x192 images (center)
-  radius: 30    # Adjusted proportionally
+  center_x: 100 #520  # Adjusted for 192x192 images (center)
+  center_y: 91 #242 # 290  # Adjusted for 192x192 images (center)
+  radius: 24    # Adjusted proportionally
 
 sink_and_publish_op:
   publish_tensors: ["positions", "positions_ids", "inner", "outer", "intensity_ids"]
@@ -45,14 +46,14 @@ sink_and_publish_op:
 
 ptychography:
   enabled: true
-  ptyrex_config: "/workdir/PtyREX/config_Oct26_eiger.json"
+  ptyrex_config: "/workdir/PtyREX/config_Oct26_selun.json"
   scan_ID: [1, 1, 1]
   ID: [1, 1, 1]
   # Scan grid now comes from the live header (header_src). These set the GPU
   # buffer capacity (allocated once, never realloced — R-6) and the default
   # geometry used at startup before any header arrives.
-  max_npoints_h: 300        # buffer capacity + startup default grid (horizontal)
-  max_npoints_v: 300        # buffer capacity + startup default grid (vertical)
+  max_npoints_h: 100        # buffer capacity + startup default grid (horizontal)
+  max_npoints_v: 100        # buffer capacity + startup default grid (vertical)
   # capacity = 100*100 = 10000 frames (matches the prior committed 100x100 grid;
   # a header requesting more frames is rejected — bump these with GPU RAM in mind)
   default_step_size_h: 0.2 # startup step size (microns), until a header arrives
